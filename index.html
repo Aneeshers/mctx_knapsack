@@ -1,0 +1,958 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AlphaZero for 3D Bin Packing</title>
+    <style>
+        @font-face {
+            font-family: 'Berkeley Mono';
+            src: url('BerkeleyMonoTrial-Regular.otf') format('opentype');
+            font-weight: normal;
+            font-style: normal;
+        }
+        
+         :root {
+            --bg: #ffffff;
+            --fg: #1a1a1a;
+            --accent: #8B0000;
+            --code-bg: #f4f4f4;
+            --border: #e0e0e0;
+            --muted: #666;
+        }
+        
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: 'Berkeley Mono', 'SF Mono', 'Consolas', monospace;
+            background: var(--bg);
+            color: var(--fg);
+            line-height: 1.7;
+            font-size: 14px;
+        }
+        
+        .container {
+            max-width: 820px;
+            margin: 0 auto;
+            padding: 60px 24px;
+        }
+        /* Header */
+        
+        header {
+            margin-bottom: 48px;
+            border-bottom: 1px solid var(--border);
+            padding-bottom: 32px;
+        }
+        
+        .venue {
+            font-size: 11px;
+            text-transform: uppercase;
+            letter-spacing: 2px;
+            color: var(--muted);
+            margin-bottom: 16px;
+        }
+        
+        h1 {
+            font-size: 28px;
+            font-weight: 600;
+            line-height: 1.3;
+            margin-bottom: 20px;
+            letter-spacing: -0.5px;
+        }
+        
+        .authors {
+            font-size: 13px;
+            color: var(--muted);
+            margin-bottom: 24px;
+        }
+        
+        .authors span {
+            color: var(--fg);
+        }
+        
+        .buttons {
+            display: flex;
+            gap: 12px;
+            flex-wrap: wrap;
+        }
+        
+        .btn {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            padding: 10px 16px;
+            font-family: inherit;
+            font-size: 12px;
+            text-decoration: none;
+            border: 1px solid var(--border);
+            background: white;
+            color: var(--fg);
+            transition: all 0.15s ease;
+        }
+        
+        .btn:hover {
+            border-color: var(--accent);
+            color: var(--accent);
+        }
+        
+        .btn svg {
+            width: 16px;
+            height: 16px;
+        }
+        
+        .btn-primary {
+            background: var(--fg);
+            color: white;
+            border-color: var(--fg);
+        }
+        
+        .btn-primary:hover {
+            background: var(--accent);
+            border-color: var(--accent);
+            color: white;
+        }
+        /* Question Block */
+        
+        .question-block {
+            background: linear-gradient(135deg, #f8f8f8 0%, #fff 100%);
+            border-left: 3px solid var(--accent);
+            padding: 24px;
+            margin: 40px 0;
+            font-size: 15px;
+            font-style: italic;
+        }
+        /* TLDR */
+        
+        .tldr {
+            background: var(--code-bg);
+            padding: 20px 24px;
+            margin: 32px 0;
+            border: 1px solid var(--border);
+        }
+        
+        .tldr-label {
+            font-size: 10px;
+            text-transform: uppercase;
+            letter-spacing: 2px;
+            color: var(--accent);
+            margin-bottom: 8px;
+            font-weight: 600;
+        }
+        
+        .tldr p {
+            margin: 0;
+            font-size: 13px;
+        }
+        /* Sections */
+        
+        h2 {
+            font-size: 18px;
+            font-weight: 600;
+            margin: 48px 0 20px 0;
+            padding-bottom: 8px;
+            border-bottom: 1px solid var(--border);
+        }
+        
+        h3 {
+            font-size: 14px;
+            font-weight: 600;
+            margin: 32px 0 12px 0;
+            color: var(--accent);
+        }
+        
+        p {
+            margin-bottom: 16px;
+        }
+        /* Code Blocks */
+        
+        pre {
+            background: #1a1a1a;
+            color: #e0e0e0;
+            padding: 20px;
+            overflow-x: auto;
+            margin: 24px 0;
+            font-size: 12px;
+            line-height: 1.6;
+            border-radius: 0;
+        }
+        
+        code {
+            font-family: 'Berkeley Mono', monospace;
+        }
+        
+        .inline-code {
+            background: var(--code-bg);
+            padding: 2px 6px;
+            font-size: 12px;
+            border: 1px solid var(--border);
+        }
+        /* Syntax highlighting */
+        
+        .keyword {
+            color: #569cd6;
+        }
+        
+        .function {
+            color: #dcdcaa;
+        }
+        
+        .string {
+            color: #ce9178;
+        }
+        
+        .comment {
+            color: #6a9955;
+        }
+        
+        .number {
+            color: #b5cea8;
+        }
+        
+        .class {
+            color: #4ec9b0;
+        }
+        /* Algorithm Box */
+        
+        .algorithm {
+            border: 1px solid var(--border);
+            margin: 32px 0;
+            background: white;
+        }
+        
+        .algorithm-header {
+            background: var(--code-bg);
+            padding: 12px 16px;
+            font-size: 12px;
+            font-weight: 600;
+            border-bottom: 1px solid var(--border);
+        }
+        
+        .algorithm-body {
+            padding: 16px;
+            font-size: 12px;
+        }
+        
+        .algorithm-body .line {
+            margin: 4px 0;
+            padding-left: 20px;
+            position: relative;
+        }
+        
+        .algorithm-body .line-num {
+            position: absolute;
+            left: 0;
+            color: var(--muted);
+            font-size: 10px;
+        }
+        /* Figures */
+        
+        figure {
+            margin: 40px 0;
+        }
+        
+        figure img,
+        figure embed,
+        figure object {
+            width: 100%;
+            border: 1px solid var(--border);
+            background: white;
+        }
+        
+        figcaption {
+            font-size: 12px;
+            color: var(--muted);
+            margin-top: 12px;
+            padding: 0 8px;
+            line-height: 1.6;
+        }
+        
+        figcaption strong {
+            color: var(--fg);
+        }
+        /* Math */
+        
+        .math {
+            font-style: italic;
+            padding: 16px;
+            background: var(--code-bg);
+            margin: 20px 0;
+            overflow-x: auto;
+            font-size: 13px;
+            text-align: center;
+            border: 1px solid var(--border);
+        }
+        /* Lists */
+        
+        ul,
+        ol {
+            margin: 16px 0 16px 24px;
+        }
+        
+        li {
+            margin-bottom: 8px;
+        }
+        /* Table */
+        
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin: 24px 0;
+            font-size: 12px;
+        }
+        
+        th,
+        td {
+            border: 1px solid var(--border);
+            padding: 10px 12px;
+            text-align: left;
+        }
+        
+        th {
+            background: var(--code-bg);
+            font-weight: 600;
+        }
+        
+        .result-highlight {
+            background: #e8f5e9;
+            font-weight: 600;
+        }
+        /* Highlight Box */
+        
+        .highlight-box {
+            border: 2px solid var(--accent);
+            padding: 20px;
+            margin: 32px 0;
+            background: #fdf8f8;
+        }
+        
+        .highlight-box h4 {
+            color: var(--accent);
+            margin-bottom: 12px;
+            font-size: 13px;
+        }
+        /* Key findings */
+        
+        .findings {
+            display: grid;
+            gap: 16px;
+            margin: 24px 0;
+        }
+        
+        .finding {
+            border-left: 3px solid var(--accent);
+            padding: 12px 16px;
+            background: var(--code-bg);
+        }
+        
+        .finding-num {
+            font-size: 10px;
+            color: var(--accent);
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+        /* Links */
+        
+        a {
+            color: var(--accent);
+            text-decoration: none;
+        }
+        
+        a:hover {
+            text-decoration: underline;
+        }
+        
+        .note {
+            font-size: 11px;
+            color: var(--muted);
+            font-style: italic;
+        }
+        /* TOC */
+        
+        .toc {
+            background: var(--code-bg);
+            padding: 20px 24px;
+            margin: 32px 0;
+            border: 1px solid var(--border);
+        }
+        
+        .toc-label {
+            font-size: 10px;
+            text-transform: uppercase;
+            letter-spacing: 2px;
+            color: var(--accent);
+            margin-bottom: 12px;
+            font-weight: 600;
+        }
+        
+        .toc ol {
+            margin: 0;
+            padding-left: 20px;
+        }
+        
+        .toc li {
+            margin-bottom: 4px;
+            font-size: 12px;
+        }
+        /* References */
+        
+        .references {
+            font-size: 12px;
+            line-height: 1.8;
+        }
+        
+        .references li {
+            margin-bottom: 8px;
+            padding-left: 8px;
+        }
+        /* Footer */
+        
+        footer {
+            margin-top: 64px;
+            padding-top: 32px;
+            border-top: 1px solid var(--border);
+            font-size: 12px;
+            color: var(--muted);
+        }
+        /* Diagram boxes */
+        
+        .diagram {
+            background: white;
+            border: 1px solid var(--border);
+            padding: 24px;
+            margin: 24px 0;
+            font-size: 12px;
+        }
+        
+        .diagram-title {
+            font-size: 10px;
+            text-transform: uppercase;
+            letter-spacing: 2px;
+            color: var(--muted);
+            margin-bottom: 16px;
+        }
+    </style>
+</head>
+
+<body>
+    <div class="container">
+        <header>
+            <div class="venue">Technical Report · 2025</div>
+            <h1>AlphaZero for 3D Bin Packing: MCTS with Learned Policy-Value Networks</h1>
+            <div class="authors">
+                <span>Aneesh Muppidi</span><sup>1</sup>
+                <br>
+                <span style="color: var(--accent);"><sup>1</sup>Harvard University</span>
+            </div>
+            <div class="buttons">
+                <a href="https://github.com/your-repo/mcts-binpack" class="btn btn-primary" target="_blank">
+                    <svg viewBox="0 0 16 16" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>                    Code
+                </a>
+                <a href="train_az_binpack.py" class="btn" target="_blank">
+                    AlphaZero
+                </a>
+                <a href="train_ppo_binpack.py" class="btn" target="_blank">
+                    PPO Baseline
+                </a>
+            </div>
+        </header>
+
+        <div class="question-block">
+            Can we combine Monte Carlo Tree Search with neural network guidance to solve combinatorial packing problems that defeat standard RL approaches?
+        </div>
+
+        <div class="tldr">
+            <div class="tldr-label">TL;DR</div>
+            <p>We apply AlphaZero-style MCTS to 3D bin packing using JAX, the <code class="inline-code">mctx</code> library, and a custom Transformer architecture. Our approach achieves <strong>0.96</strong> average utilization compared to <strong>0.90</strong>                from PPO—a 6 percentage point improvement at identical network capacity, demonstrating the power of search-based planning for combinatorial optimization.</p>
+        </div>
+
+        <nav class="toc">
+            <div class="toc-label">Contents</div>
+            <ol>
+                <li><a href="#problem">The 3D Bin Packing Problem</a></li>
+                <li><a href="#mcts">Monte Carlo Tree Search with Neural Guidance</a></li>
+                <li><a href="#mctx">The mctx Library: Gumbel MuZero</a></li>
+                <li><a href="#architecture">Transformer Architecture</a></li>
+                <li><a href="#training">Training: AlphaZero vs PPO</a></li>
+                <li><a href="#results">Results</a></li>
+            </ol>
+        </nav>
+
+        <h2 id="problem">The 3D Bin Packing Problem</h2>
+
+        <p>
+            The 3D bin packing problem is a classic NP-hard combinatorial optimization challenge: given a set of rectangular items with dimensions <code class="inline-code">(x, y, z)</code> and a container of fixed size, pack as many items as possible
+            to maximize space utilization. Unlike the 1D knapsack where we only decide <em>which</em> items to include, 3D packing requires deciding <em>where</em> to place each item—and placement affects future available spaces.
+        </p>
+
+        <p>
+            Jumanji's <code class="inline-code">BinPack-v2</code> environment formulates this as a sequential decision process. At each timestep, the agent selects:
+        </p>
+
+        <ol>
+            <li>An <strong>Empty Maximal Space (EMS)</strong>—a maximal empty rectangular region in the container</li>
+            <li>An <strong>item</strong> from the remaining unpacked items</li>
+        </ol>
+
+        <p>
+            The action space is the Cartesian product: <code class="inline-code">A = E × I</code>, where <code class="inline-code">E = obs_num_ems = 40</code> and <code class="inline-code">I = max_num_items = 20</code>. This yields <strong>800 possible actions per step</strong>.
+        </p>
+
+        <h3>State Representation</h3>
+
+        <div class="diagram">
+            <div class="diagram-title">Observation Space</div>
+            <table>
+                <tr>
+                    <th>Field</th>
+                    <th>Shape</th>
+                    <th>Description</th>
+                </tr>
+                <tr>
+                    <td><code class="inline-code">ems</code></td>
+                    <td>(E, 6)</td>
+                    <td>EMS coordinates (x1, x2, y1, y2, z1, z2)</td>
+                </tr>
+                <tr>
+                    <td><code class="inline-code">ems_mask</code></td>
+                    <td>(E,)</td>
+                    <td>Valid EMS slots</td>
+                </tr>
+                <tr>
+                    <td><code class="inline-code">items</code></td>
+                    <td>(I, 3)</td>
+                    <td>Item dimensions (x_len, y_len, z_len)</td>
+                </tr>
+                <tr>
+                    <td><code class="inline-code">items_mask</code></td>
+                    <td>(I,)</td>
+                    <td>Valid item slots</td>
+                </tr>
+                <tr>
+                    <td><code class="inline-code">items_placed</code></td>
+                    <td>(I,)</td>
+                    <td>Already-placed items</td>
+                </tr>
+                <tr>
+                    <td><code class="inline-code">action_mask</code></td>
+                    <td>(E, I)</td>
+                    <td>Feasible (EMS, item) pairs</td>
+                </tr>
+            </table>
+        </div>
+
+        <p>
+            The dense reward equals the <em>volume utilization</em> gained at each step. Episode returns sum to total utilization in [0, 1].
+        </p>
+
+        <h2 id="mcts">Monte Carlo Tree Search with Neural Guidance</h2>
+
+        <p>
+            Pure MCTS struggles with large action spaces. AlphaZero's insight: use a neural network to provide <em>prior probabilities</em> over actions (guiding exploration) and <em>value estimates</em> (replacing random rollouts).
+        </p>
+
+        <div class="algorithm">
+            <div class="algorithm-header">AlphaZero Search (per move)</div>
+            <div class="algorithm-body">
+                <div class="line"><span class="line-num">1</span><span class="keyword">for</span> sim = 1 to N <span class="keyword">do</span></div>
+                <div class="line"><span class="line-num">2</span>&nbsp;&nbsp;<strong>Selection:</strong> Traverse tree via UCB scores</div>
+                <div class="line"><span class="line-num">3</span>&nbsp;&nbsp;<strong>Expansion:</strong> At leaf, evaluate neural net → (π, v)</div>
+                <div class="line"><span class="line-num">4</span>&nbsp;&nbsp;<strong>Backup:</strong> Propagate v up the tree</div>
+                <div class="line"><span class="line-num">5</span><span class="keyword">end for</span></div>
+                <div class="line"><span class="line-num">6</span><span class="keyword">return</span> action_weights ∝ visit_counts</div>
+            </div>
+        </div>
+
+        <p>
+            The neural network is trained to match the search policy (visit distribution) and value (Monte Carlo returns), creating a virtuous cycle: better networks → better search → better training targets → better networks.
+        </p>
+
+        <div class="math">
+            UCB(s, a) = Q(s, a) + c · π(a|s) · √N(s) / (1 + N(s, a))
+        </div>
+
+        <h2 id="mctx">The mctx Library: Gumbel MuZero</h2>
+
+        <p>
+            We use DeepMind's <a href="https://github.com/google-deepmind/mctx" target="_blank">mctx</a> library, which provides JAX-native MCTS implementations. Specifically, we employ <code class="inline-code">gumbel_muzero_policy</code>—a policy improvement
+            algorithm from "Policy improvement by planning with Gumbel" (ICLR 2022).
+        </p>
+
+        <h3>Why Gumbel MuZero?</h3>
+
+        <p>
+            Standard MCTS uses stochastic action selection at the root. Gumbel MuZero instead uses <em>Sequential Halving</em> with Gumbel noise to deterministically select which actions to explore:
+        </p>
+
+        <ul>
+            <li>Better sample efficiency with limited simulations</li>
+            <li>Principled handling of large action spaces</li>
+            <li>Improved policy targets via <code class="inline-code">softmax(prior_logits + completed_qvalues)</code></li>
+        </ul>
+
+        <h3>The Recurrent Function</h3>
+
+        <p>
+            MCTS requires a <em>model</em> of the environment. For BinPack, we use the true environment dynamics (perfect model):
+        </p>
+
+        <pre><code><span class="keyword">def</span> <span class="function">recurrent_fn</span>(model, rng_key, action, state):
+    model_params, model_state = model
+    
+    <span class="comment"># Unflatten: (B,) -> (B, 2) for (ems_id, item_id)</span>
+    action_pair = unflatten_action(action)
+    
+    <span class="comment"># Step the environment</span>
+    next_state, next_ts = jax.vmap(env.step)(state, action_pair)
+    
+    <span class="comment"># Neural network predictions at next state</span>
+    obs = next_ts.observation
+    (logits, value), _ = forward.apply(
+        model_params, model_state, obs
+    )
+    
+    <span class="comment"># Mask invalid actions</span>
+    valid_flat = safe_action_mask_flat(obs.action_mask)
+    logits = mask_logits(logits, valid_flat)
+    
+    <span class="keyword">return</span> mctx.RecurrentFnOutput(
+        reward=next_ts.reward,
+        discount=jnp.where(next_ts.discount == <span class="number">0</span>, <span class="number">0.0</span>, <span class="number">1.0</span>),
+        prior_logits=logits,
+        value=value,
+    ), next_state</code></pre>
+
+        <a href="https://github.com/your-repo/mcts-binpack/blob/main/train_az_binpack.py#L290" class="btn" target="_blank" style="margin-top: 12px;">
+            <svg viewBox="0 0 16 16" fill="currentColor" width="14" height="14"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>            View recurrent_fn
+        </a>
+
+        <h3>Action Masking</h3>
+
+        <p>
+            The 2D action mask <code class="inline-code">(E, I)</code> must be flattened and passed to MCTS as <code class="inline-code">invalid_actions</code>. We ensure at least one action is valid to avoid numerical issues:
+        </p>
+
+        <pre><code><span class="keyword">def</span> <span class="function">safe_action_mask_flat</span>(action_mask_2d):
+    <span class="string">"""Flatten (B, E, I) -> (B, E*I) with fallback."""</span>
+    flat = action_mask_2d.reshape((action_mask_2d.shape[<span class="number">0</span>], -<span class="number">1</span>))
+    has_any = jnp.any(flat, axis=-<span class="number">1</span>)
+    
+    <span class="comment"># If no valid action, allow dummy action 0</span>
+    dummy = jax.nn.one_hot(
+        jnp.zeros_like(has_any, dtype=jnp.int32), 
+        num_actions
+    ).astype(jnp.bool_)
+    
+    <span class="keyword">return</span> jnp.where(has_any[:, <span class="keyword">None</span>], flat, dummy)</code></pre>
+
+        <h3>Invoking the Search</h3>
+
+        <pre><code>policy_out = mctx.gumbel_muzero_policy(
+    params=model,
+    rng_key=key,
+    root=mctx.RootFnOutput(
+        prior_logits=root_logits,
+        value=value,
+        embedding=state,  <span class="comment"># Env state as embedding</span>
+    ),
+    recurrent_fn=recurrent_fn,
+    num_simulations=<span class="number">32</span>,
+    invalid_actions=~valid_flat,
+    qtransform=mctx.qtransform_completed_by_mix_value,
+    gumbel_scale=<span class="number">1.0</span>,
+)
+
+action = policy_out.action
+action_weights = policy_out.action_weights  <span class="comment"># Training target</span></code></pre>
+
+        <h2 id="architecture">Transformer Architecture</h2>
+
+        <p>
+            The policy-value network must process variable-length sets of EMS regions and items with complex relational structure. We use a Transformer-based architecture with cross-attention between EMS and item tokens.
+        </p>
+
+        <h3>Torso: Cross-Attention Between EMS and Items</h3>
+
+        <p>
+            The key insight: EMS-item compatibility is encoded in the action mask. We use this as an attention mask for cross-attention:
+        </p>
+
+        <pre><code><span class="keyword">class</span> <span class="class">BinPackTorso</span>(hk.Module):
+    <span class="keyword">def</span> <span class="function">__call__</span>(self, observation):
+        <span class="comment"># Embed EMS: (B, E, 6) -> (B, E, D)</span>
+        ems_leaves = jnp.stack(
+            jax.tree_util.tree_leaves(observation.ems), axis=-<span class="number">1</span>
+        )
+        ems_emb = hk.Linear(self.model_size)(ems_leaves)
+        
+        <span class="comment"># Embed Items: (B, I, 3) -> (B, I, D)</span>
+        item_leaves = jnp.stack(
+            jax.tree_util.tree_leaves(observation.items), axis=-<span class="number">1</span>
+        )
+        items_emb = hk.Linear(self.model_size)(item_leaves)
+        
+        <span class="comment"># Cross-attention masks from action_mask</span>
+        ems_cross_items = jnp.expand_dims(
+            observation.action_mask, axis=-<span class="number">3</span>
+        )
+        
+        <span class="keyword">for</span> block_id <span class="keyword">in</span> range(self.num_layers):
+            <span class="comment"># Self-attention on EMS</span>
+            ems_emb = TransformerBlock(...)(
+                ems_emb, ems_emb, ems_emb, ems_mask
+            )
+            <span class="comment"># Self-attention on Items</span>
+            items_emb = TransformerBlock(...)(
+                items_emb, items_emb, items_emb, items_mask
+            )
+            <span class="comment"># Cross-attention: EMS ↔ Items</span>
+            ems_emb = TransformerBlock(...)(
+                ems_emb, items_emb, items_emb, ems_cross_items
+            )
+            items_emb = TransformerBlock(...)(
+                items_emb, ems_emb, ems_emb, items_cross_ems
+            )
+        
+        <span class="keyword">return</span> ems_emb, items_emb</code></pre>
+
+        <a href="https://github.com/your-repo/mcts-binpack/blob/main/train_az_binpack.py#L180" class="btn" target="_blank" style="margin-top: 12px;">
+            <svg viewBox="0 0 16 16" fill="currentColor" width="14" height="14"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>            View BinPackTorso
+        </a>
+
+        <h3>Policy Head: Outer Product</h3>
+
+        <p>
+            To produce logits over the joint action space (E × I), we compute an outer product between projected EMS and Item embeddings:
+        </p>
+
+        <pre><code><span class="comment"># Project to policy space</span>
+ems_h = hk.Linear(self.model_size)(ems_embeddings)     <span class="comment"># (B, E, D)</span>
+items_h = hk.Linear(self.model_size)(items_embeddings) <span class="comment"># (B, I, D)</span>
+
+<span class="comment"># Outer product: (B, E, D) x (B, I, D) -> (B, E, I)</span>
+logits_2d = jnp.einsum(<span class="string">"...ek,...ik->...ei"</span>, ems_h, items_h)
+
+<span class="comment"># Mask and flatten: (B, E, I) -> (B, E*I)</span>
+logits_2d = jnp.where(observation.action_mask, logits_2d, -<span class="number">1e9</span>)
+logits = logits_2d.reshape(batch_size, -<span class="number">1</span>)</code></pre>
+
+        <h3>Value Head: Pooled Representations</h3>
+
+        <pre><code><span class="comment"># Sum-pool over valid EMS and available items</span>
+ems_sum = jnp.sum(ems_emb, axis=-<span class="number">2</span>, where=ems_mask[..., <span class="keyword">None</span>])
+items_avail = observation.items_mask & ~observation.items_placed
+items_sum = jnp.sum(items_emb, axis=-<span class="number">2</span>, where=items_avail[..., <span class="keyword">None</span>])
+
+<span class="comment"># MLP to scalar value in [0, 1]</span>
+joint = jnp.concatenate([ems_sum, items_sum], axis=-<span class="number">1</span>)
+v = hk.nets.MLP([D, D, <span class="number">1</span>])(joint)
+v = jax.nn.sigmoid(jnp.squeeze(v, axis=-<span class="number">1</span>))  <span class="comment"># Utilization target</span></code></pre>
+
+        <div class="highlight-box">
+            <h4>Architecture Summary</h4>
+            4 Transformer layers · 4 attention heads · key size 32 · model dimension D = 128 · MLP hidden units (256, 256)
+        </div>
+
+        <h2 id="training">Training: AlphaZero vs PPO</h2>
+
+        <h3>AlphaZero Training Loop</h3>
+
+        <p>Each iteration:</p>
+
+        <ol>
+            <li><strong>Self-play:</strong> Run batched episodes using MCTS (32 simulations/move)</li>
+            <li><strong>Compute targets:</strong> <code class="inline-code">action_weights</code> from MCTS, Monte Carlo returns for value</li>
+            <li><strong>Train:</strong> Minimize cross-entropy (policy) + MSE (value)</li>
+        </ol>
+
+        <pre><code><span class="keyword">def</span> <span class="function">loss_fn</span>(params, state, batch):
+    (logits, value), state = forward.apply(params, state, batch.obs)
+    
+    <span class="comment"># Policy: match MCTS action distribution</span>
+    pol_loss = optax.softmax_cross_entropy(logits, batch.policy_tgt)
+    
+    <span class="comment"># Value: match Monte Carlo returns</span>
+    v_loss = optax.l2_loss(value, batch.value_tgt)
+    
+    mask = batch.mask.astype(jnp.float32)
+    pol_loss = jnp.sum(pol_loss * mask) / jnp.sum(mask)
+    v_loss = jnp.sum(v_loss * mask) / jnp.sum(mask)
+    
+    <span class="keyword">return</span> pol_loss + v_loss, (state, pol_loss, v_loss)</code></pre>
+
+        <h3>PPO Baseline</h3>
+
+        <p>
+            For comparison, we implement PPO with the <em>same network architecture</em> (minus MCTS):
+        </p>
+
+        <ul>
+            <li>Actions sampled from policy (no search)</li>
+            <li>GAE for advantage estimation (λ = 0.95)</li>
+            <li>Clipped surrogate objective (ε = 0.2)</li>
+            <li>Value function clipping</li>
+        </ul>
+
+        <pre><code><span class="comment"># PPO clipped objective</span>
+ratio = jnp.exp(new_logp - old_logp)
+surr1 = ratio * advantages
+surr2 = jnp.clip(ratio, <span class="number">1</span> - clip_eps, <span class="number">1</span> + clip_eps) * advantages
+policy_loss = -jnp.minimum(surr1, surr2).mean()
+
+<span class="comment"># Value clipping</span>
+v_clipped = old_v + jnp.clip(v - old_v, -clip_eps, clip_eps)
+v_loss = jnp.maximum((v - returns)**<span class="number">2</span>, (v_clipped - returns)**<span class="number">2</span>).mean()
+
+loss = policy_loss + <span class="number">0.5</span> * v_loss - <span class="number">0.01</span> * entropy</code></pre>
+
+        <a href="https://github.com/your-repo/mcts-binpack/blob/main/train_ppo_binpack.py" class="btn" target="_blank" style="margin-top: 12px;">
+            <svg viewBox="0 0 16 16" fill="currentColor" width="14" height="14"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>            View PPO implementation
+        </a>
+
+        <h2 id="results">Results</h2>
+
+        <table>
+            <tr>
+                <th>Method</th>
+                <th>Avg Return</th>
+                <th>Eval (Greedy)</th>
+                <th>Sims/Move</th>
+            </tr>
+            <tr>
+                <td>PPO</td>
+                <td>0.90</td>
+                <td>0.90</td>
+                <td>—</td>
+            </tr>
+            <tr>
+                <td>AlphaZero (nsim=8)</td>
+                <td>0.93</td>
+                <td>0.92</td>
+                <td>8</td>
+            </tr>
+            <tr class="result-highlight">
+                <td><strong>AlphaZero (nsim=32)</strong></td>
+                <td><strong>0.96</strong></td>
+                <td><strong>0.95</strong></td>
+                <td>32</td>
+            </tr>
+            <tr>
+                <td>AlphaZero (nsim=64)</td>
+                <td>0.96</td>
+                <td>0.95</td>
+                <td>64</td>
+            </tr>
+        </table>
+
+        <div class="question-block">
+            Why does MCTS help so much? Bin packing has sparse, delayed rewards—a seemingly good early placement can block better solutions. MCTS explicitly searches ahead to evaluate placement consequences.
+        </div>
+
+        <h3>Key Observations</h3>
+
+        <div class="findings">
+            <div class="finding">
+                <div class="finding-num">Finding 1</div>
+                <strong>Search provides stronger training signal.</strong> MCTS action weights encode multi-step lookahead. PPO's policy gradient only sees single-step feedback.
+            </div>
+            <div class="finding">
+                <div class="finding-num">Finding 2</div>
+                <strong>Diminishing returns beyond 32 simulations.</strong> The marginal gain from 32→64 sims is small, suggesting the bottleneck shifts to network capacity or training data diversity.
+            </div>
+            <div class="finding">
+                <div class="finding-num">Finding 3</div>
+                <strong>Greedy evaluation underperforms MCTS execution.</strong> The learned policy alone achieves ~0.95, but running MCTS at test time could push higher. This gap represents the value of search at inference.
+            </div>
+        </div>
+
+        <h3>Computational Cost</h3>
+
+        <p>
+            MCTS is significantly more expensive per environment step:
+        </p>
+
+        <ul>
+            <li>PPO: ~1× forward pass per step</li>
+            <li>AlphaZero (nsim=32): ~32× forward passes per step</li>
+        </ul>
+
+        <p>
+            However, AlphaZero reaches 0.96 utilization in ~400 iterations, while PPO plateaus at 0.90 regardless of training length.
+        </p>
+
+        <h2>Hyperparameters</h2>
+
+        <table>
+            <tr>
+                <th>Parameter</th>
+                <th>AlphaZero</th>
+                <th>PPO</th>
+            </tr>
+            <tr>
+                <td>Learning rate</td>
+                <td>1e-3</td>
+                <td>3e-4</td>
+            </tr>
+            <tr>
+                <td>Batch size (selfplay)</td>
+                <td>1024</td>
+                <td>1024</td>
+            </tr>
+            <tr>
+                <td>Batch size (training)</td>
+                <td>4096</td>
+                <td>4096</td>
+            </tr>
+            <tr>
+                <td>Discount (γ)</td>
+                <td>1.0</td>
+                <td>1.0</td>
+            </tr>
+            <tr>
+                <td>GAE λ</td>
+                <td>—</td>
+                <td>0.95</td>
+            </tr>
+            <tr>
+                <td>PPO clip ε</td>
+                <td>—</td>
+                <td>0.2</td>
+            </tr>
+            <tr>
+                <td>Entropy coef</td>
+                <td>—</td>
+                <td>0.01</td>
+            </tr>
+            <tr>
+                <td>Max grad norm</td>
+                <td>1.0</td>
+                <td>1.0</td>
+            </tr>
+        </table>
+
+        <h2>References</h2>
+
+        <ol class="references">
+            <li>Silver et al. <a href="https://www.nature.com/articles/nature16961">"Mastering the game of Go with deep neural networks and tree search"</a> Nature 2016</li>
+            <li>Schrittwieser et al. <a href="https://www.nature.com/articles/s41586-020-03051-4">"Mastering Atari, Go, chess and shogi by planning with a learned model"</a> Nature 2020</li>
+            <li>Danihelka et al. <a href="https://openreview.net/forum?id=bERaNdoegnO">"Policy improvement by planning with Gumbel"</a> ICLR 2022</li>
+            <li>InstaDeep. <a href="https://github.com/instadeepai/jumanji">"Jumanji: A diverse suite of scalable RL environments in JAX"</a> 2023</li>
+            <li>DeepMind. <a href="https://github.com/google-deepmind/mctx">"mctx: MCTS-in-JAX"</a></li>
+        </ol>
+
+        <footer>
+            <p>
+                <a href="https://aneeshers.github.io"><strong>Aneesh Muppidi</strong></a><br> Harvard University · 2025
+            </p>
+            <p style="margin-top: 16px;">
+                <a href="https://github.com/your-repo/mcts-binpack">GitHub</a>
+            </p>
+        </footer>
+    </div>
+</body>
+
+</html>
