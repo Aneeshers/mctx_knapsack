@@ -534,7 +534,7 @@
 
         <figure class="visual-abstract">
             <img src="alphazero_binpack.gif" alt="Expert Iteration for 3D Bin Packing">
-            <figcaption>Visual Abstract: MCTS guides item placement decisions in real-time</figcaption>
+            <figcaption></figcaption>
         </figure>
 
         <div class="tldr">
@@ -641,8 +641,7 @@ num_actions = obs_num_ems * max_num_items  <span class="comment"># 800 total</sp
         <p>
             The environment's observation structure is designed to be "planning-friendly"—rather than giving raw pixels or low-level state, it provides two sets of tokens (EMS and items) plus boolean masks defining what's valid. This aligns nicely with transformer-style
             encoders and with our flattened (E×I) action head. Each EMS is represented by its 6D bounding box coordinates (x1, x2, y1, y2, z1, z2), and each item by its three dimensions (x_len, y_len, z_len). The critical piece is the
-            <code
-                class="inline-code">action_mask</code>: a boolean matrix where entry (e, i) is True if item i can legally be placed in EMS e.
+            <code class="inline-code">action_mask</code>: a boolean matrix where entry (e, i) is True if item i can legally be placed in EMS e.
         </p>
 
         <p>
