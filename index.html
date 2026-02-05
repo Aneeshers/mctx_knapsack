@@ -517,7 +517,7 @@
                 distill them into a fast neural policy—using JAX/XLA to make search and training throughput competitive with model-free baselines like PPO.
             </p>
             <div class="meta">
-                <a href="https://aneeshers.github.io">Aneesh Muppidi</a> February 2025
+                <a href="https://aneeshers.github.io">Aneesh Muppidi</a> · February 2025
             </div>
             <div class="buttons">
                 <a href="https://github.com/Aneeshers/expert-iteration-rl" class="btn btn-primary" target="_blank">
@@ -541,8 +541,7 @@
             <div class="tldr-label">TL;DR</div>
             <p>
                 Expert Iteration combines MCTS with neural network distillation to solve planning problems. With JAX's <code class="inline-code">vmap</code> and <code class="inline-code">pmap</code>, we can run MCTS fast enough to compete with PPO on
-                wall-clock time—while achieving
-                <strong>96% volume utilization</strong> vs PPO's 90% on 3D bin packing.
+                wall-clock time—while achieving <strong>96% volume utilization</strong> vs PPO's 90% on 3D bin packing.
             </p>
         </div>
 
@@ -550,80 +549,79 @@
             <div class="toc-title">Contents</div>
             <ul>
                 <li><a href="#problem">The Problem: 3D Bin Packing</a></li>
-                <li><a href="#jumanji">The Jumanji Environment (BinPack-v2)</a></li>
-                <li><a href="#exit">Expert Iteration: Not Self-Play</a></li>
-                <li><a href="#alg">The Algorithm</a></li>
-                <li><a href="#mctx">MCTS with DeepMind’s mctx</a></li>
-                <li><a href="#gumbel">Gumbel Exploration (Gumbel MuZero)</a></li>
-                <li><a href="#underhood">Under the Hood: batched MCTS in mctx</a></li>
-                <li><a href="#jax">JAX Parallelism: The Secret Sauce</a></li>
-                <li><a href="#ppo">EXIT vs Self-Play vs PPO (detailed)</a></li>
-                <li><a href="#refs">Resources & References</a></li>
+                <li><a href="#jumanji">The Jumanji Environment</a></li>
+                <li><a href="#exit">Expert Iteration: Teaching a Network with Search</a></li>
+                <li><a href="#mcts">Monte Carlo Tree Search with mctx</a></li>
+                <li><a href="#gumbel">Gumbel Exploration</a></li>
+                <li><a href="#jax">JAX Parallelism</a></li>
+                <li><a href="#architecture">Neural Network Architecture</a></li>
+                <li><a href="#experiments">Experiments</a></li>
+                <li><a href="#implementation">Implementation Details</a></li>
+                <li><a href="#refs">References</a></li>
             </ul>
         </div>
+
+        <!-- ═══════════════════════════════════════════════════════════════════ -->
+        <!-- SECTION: The Problem -->
+        <!-- ═══════════════════════════════════════════════════════════════════ -->
 
         <h2 id="problem">The Problem: 3D Bin Packing</h2>
 
         <p>
-            I first encountered bin packing in Harvard's
-            <a href="https://docs.google.com/document/d/1zr1xozlsfoF0hhABF46xvXZhK62Jy18x/edit" target="_blank">CS 124</a> (Data Structures and Algorithms), where it appeared in a collection of NP-hard problems. The setup is deceptively simple: given
-            a set of rectangular boxes and a container, pack as many boxes as possible to maximize volume utilization.
+            I first encountered bin packing in Harvard's <a href="https://docs.google.com/document/d/1zr1xozlsfoF0hhABF46xvXZhK62Jy18x/edit" target="_blank">CS 124</a> (Data Structures and Algorithms), where it appeared alongside other classic NP-hard
+            problems. The setup is deceptively simple: you're given a set of rectangular boxes and a container, and your goal is to pack as many boxes as possible to maximize volume utilization. It sounds like something you could solve by just being clever
+            about placement order, but the combinatorial explosion makes this problem far harder than it appears.
         </p>
 
         <p>
-            In its 3D form, this is equivalent to the
-            <a href="https://en.wikipedia.org/wiki/Knapsack_problem" target="_blank">3D Knapsack Problem</a>—one of Karp's 21 NP-complete problems. The challenge isn't just fitting boxes; it's the combinatorial explosion of possible placements. With <em>n</em>            items and <em>m</em> potential positions, the search space is roughly O(m<sup>n</sup>).
+            In its 3D form, bin packing is equivalent to the <a href="https://en.wikipedia.org/wiki/Knapsack_problem" target="_blank">3D Knapsack Problem</a>—one of Karp's 21 NP-complete problems. The difficulty isn't just fitting boxes into the container;
+            it's navigating the astronomical number of possible placements. With <em>n</em> items and <em>m</em> potential positions, the search space grows roughly as O(m<sup>n</sup>). Even for modest problem sizes, brute-force search is hopeless.
         </p>
 
-        <div class="highlight-box">
-            <h4>Why is 3D Bin Packing NP-Hard?</h4>
-            <p>
-                The 1D bin packing problem is already NP-hard (reducible from
-                <a href="https://en.wikipedia.org/wiki/Partition_problem" target="_blank">PARTITION</a>). Adding dimensions only makes it harder. There's no known polynomial-time algorithm that finds optimal solutions, which is why heuristics and learning-based
-                approaches are so valuable.
-            </p>
-            <p style="margin-top: 12px;">
-                <strong>Reference:</strong> Garey & Johnson,
-                <a href="https://perso.limos.fr/~palafour/PAPERS/PDF/Garey-Johnson79.pdf" target="_blank">
-                    <em>Computers and Intractability</em></a>, Chapter 3.
-            </p>
+        <p>
+            The 1D bin packing problem is already NP-hard, as you can reduce the <a href="https://en.wikipedia.org/wiki/Partition_problem" target="_blank">PARTITION</a> problem to it. Adding two more dimensions only compounds the difficulty. There's no
+            known polynomial-time algorithm that finds optimal solutions, which is precisely why heuristics and learning-based approaches have become so valuable for these problems. For a thorough treatment of computational complexity and bin packing
+            specifically, Garey and Johnson's <a href="https://perso.limos.fr/~palafour/PAPERS/PDF/Garey-Johnson79.pdf" target="_blank"><em>Computers and Intractability</em></a> remains the canonical reference.
+        </p>
+
+        <p>
+            What makes 3D bin packing particularly interesting from a reinforcement learning perspective is that it's a perfect-information, deterministic, single-agent planning task. Once you sample a problem instance (a set of items to pack), the environment dynamics
+            are completely known. You place an item, the container state updates deterministically, and you get a reward proportional to the volume you just filled. This structure turns out to be ideal for tree search methods—something we'll exploit heavily.
+        </p>
+
+        <p>
+            Before diving into the algorithm, let's formally specify the MDP we're solving. This framing will help explain why MCTS is so effective here. BinPack is an episodic MDP with deterministic dynamics, a large discrete action space, and rewards that are exactly
+            computable from the environment state:
+        </p>
+
+        <div class="math-block">
+            \[ \text{State } s_t = (\text{EMS list},\, \text{items remaining},\, \text{placed items},\, \text{container occupancy}) \] \[ \text{Action } a_t = (\text{ems\_id},\, \text{item\_id}) \in \{0..E-1\}\times\{0..I-1\} \] \[ s_{t+1} = f(s_t, a_t)\quad \text{(exact
+            transition from env.step)} \] \[ r_t = \Delta \text{utilization} \in [0,1] \]
         </div>
 
-        <div class="callout">
-            <h4>MDP framing (why MCTS is “legal” here)</h4>
-            <p>
-                It helps to explicitly state the RL object we’re solving: BinPack is an episodic MDP with deterministic dynamics (given the sampled instance), a large discrete action space, and rewards that are exactly computable from the environment state.
-            </p>
-            <div class="math-block">
-                \[ \text{State } s_t = (\text{EMS list},\, \text{items remaining},\, \text{placed items},\, \text{container occupancy}) \\ \text{Action } a_t = (\text{ems\_id},\, \text{item\_id}) \in \{0..E-1\}\times\{0..I-1\} \\ s_{t+1} = f(s_t, a_t)\quad \text{(exact
-                transition from env.step)} \\ r_t = \Delta \text{utilization} \in [0,1] \]
-            </div>
-            <p class="note" style="margin-bottom:0;">
-                This is the core reason Expert Iteration works well here: search can roll forward with perfect dynamics, and the network learns to imitate the search-improved policy.
-            </p>
-        </div>
+        <p>
+            The crucial observation here is that we have access to the exact transition function \(f\). Unlike Atari games where we'd need to learn a world model, or robotics where dynamics are noisy and partially observable, bin packing gives us perfect simulation
+            for free. This means MCTS can roll forward with ground-truth dynamics, and the neural network's job is simply to imitate the search-improved policy. That asymmetry—cheap perfect simulation combined with expensive search—is exactly where Expert
+            Iteration shines.
+        </p>
 
-        <h3 id="jumanji">The Jumanji Environment</h3>
+        <!-- ═══════════════════════════════════════════════════════════════════ -->
+        <!-- SECTION: The Jumanji Environment -->
+        <!-- ═══════════════════════════════════════════════════════════════════ -->
+
+        <h2 id="jumanji">The Jumanji Environment</h2>
 
         <p>
-            We use InstaDeep's <a href="https://github.com/instadeepai/jumanji" target="_blank">Jumanji</a> library, which provides a JAX-native BinPack environment. The key abstraction is
-            <strong>Empty Maximal Spaces (EMS)</strong>: rectangular regions inside the container where items can be placed.
+            We use InstaDeep's <a href="https://github.com/instadeepai/jumanji" target="_blank">Jumanji</a> library, which provides a JAX-native BinPack environment. The key abstraction that makes this environment tractable is the concept of <strong>Empty Maximal Spaces (EMS)</strong>—rectangular
+            regions inside the container where items can potentially be placed.
         </p>
 
         <p>
-            At each step, the agent chooses:
-        </p>
-        <ul>
-            <li><strong>Which EMS</strong> to place an item in (from up to 40 candidates)</li>
-            <li><strong>Which item</strong> to place (from up to 20 items)</li>
-        </ul>
-
-        <p>
-            This gives a joint action space of 40 × 20 = 800 discrete actions. The environment uses
-            <strong>dense rewards</strong>: each placement adds the item's volume (normalized by container volume) to the cumulative return. A perfect packing yields a return of 1.0.
+            At each step, the agent makes a joint decision: which EMS to place an item in (from up to 40 candidates), and which item to place (from up to 20 items). This gives a joint action space of 40 × 20 = 800 discrete actions. The environment uses dense rewards,
+            meaning each placement adds the item's volume (normalized by container volume) to the cumulative return. A perfect packing that uses all available space yields a return of 1.0.
         </p>
 
-        <pre><code><span class="comment"># Environment setup (from our implementation)</span>
+        <pre><code><span class="comment"># Environment setup</span>
 <span class="keyword">import</span> jumanji
 
 env = jumanji.make(<span class="string">"BinPack-v2"</span>)
@@ -633,44 +631,23 @@ obs_num_ems = <span class="number">40</span>   <span class="comment"># Observabl
 max_num_items = <span class="number">20</span>  <span class="comment"># Maximum items per episode</span>
 num_actions = obs_num_ems * max_num_items  <span class="comment"># 800 total</span>
 
-<span class="comment"># Flatten action for simpler MCTS handling</span>
+<span class="comment"># We flatten the action for simpler MCTS handling</span>
 <span class="keyword">def</span> <span class="function">unflatten_action</span>(action):
     <span class="string">"""Flat index → (ems_id, item_id)"""</span>
     ems_id = action // max_num_items
     item_id = action % max_num_items
     <span class="keyword">return</span> jnp.stack([ems_id, item_id], axis=-<span class="number">1</span>)</code></pre>
 
-        <p class="note">
-            Full environment code:
-            <a href="https://github.com/instadeepai/jumanji/blob/main/jumanji/environments/packing/bin_pack/env.py" target="_blank">
-            jumanji/environments/packing/bin_pack/env.py</a>
+        <p>
+            The environment's observation structure is designed to be "planning-friendly"—rather than giving raw pixels or low-level state, it provides two sets of tokens (EMS and items) plus boolean masks defining what's valid. This aligns nicely with transformer-style
+            encoders and with our flattened (E×I) action head. Each EMS is represented by its 6D bounding box coordinates (x1, x2, y1, y2, z1, z2), and each item by its three dimensions (x_len, y_len, z_len). The critical piece is the
+            <code
+                class="inline-code">action_mask</code>: a boolean matrix where entry (e, i) is True if item i can legally be placed in EMS e.
         </p>
 
-        <h3>BinPack-v2 internals: what the environment actually does</h3>
-
         <p>
-            The BinPack environment is designed so that the observation is already a “planning-friendly” summary: a set of candidate empty spaces (EMS) and a set of remaining items. That’s why learning is feasible at all — the env exposes structure, not pixels.
-        </p>
-
-        <div class="highlight-box">
-            <h4>Observation structure (sets + masks)</h4>
-            <p>
-                The environment returns two <em>sets</em> of tokens (EMS, items), plus boolean masks that define what’s valid. This aligns nicely with transformer-style encoders and with a flattened (E×I) action head.
-            </p>
-            <ul>
-                <li><code class="inline-code">ems</code>: 6D box coordinates per EMS: (x1,x2,y1,y2,z1,z2)</li>
-                <li><code class="inline-code">items</code>: (x_len,y_len,z_len) per item</li>
-                <li><code class="inline-code">action_mask</code>: boolean matrix (E×I) where True = valid placement</li>
-            </ul>
-            <p class="note" style="margin-bottom:0;">
-                For the “packing environments” overview (including BinPack), see the Jumanji paper: <a href="https://arxiv.org/abs/2306.09884" target="_blank">Bonnet et al., 2023/2024</a>.
-            </p>
-        </div>
-
-        <h4>How the joint action mask is computed</h4>
-        <p>
-            The critical piece is <code class="inline-code">action_mask</code>: for each EMS and each item, the env tests whether the item fits in that EMS and whether the item is still available. It’s implemented with nested <code class="inline-code">jax.vmap</code>,
-            so the entire mask is computed in parallel.
+            How does the environment compute this joint action mask? For each EMS and each item, it tests whether the item fits in that EMS and whether the item is still available. This is implemented with nested <code class="inline-code">jax.vmap</code>,
+            so the entire mask computation happens in parallel:
         </p>
 
         <pre><code><span class="comment"># From jumanji/environments/packing/bin_pack/env.py</span>
@@ -682,63 +659,42 @@ action_mask = jax.vmap(
     jax.vmap(is_action_allowed, in_axes=(<span class="keyword">None</span>, <span class="keyword">None</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>)),
     in_axes=(<span class="number">0</span>, <span class="number">0</span>, <span class="keyword">None</span>, <span class="keyword">None</span>, <span class="keyword">None</span>),
 )(obs_ems, obs_ems_mask, items, items_mask, items_placed)</code></pre>
-        <div class="source-note">
-            Source: <a href="https://github.com/instadeepai/jumanji/blob/main/jumanji/environments/packing/bin_pack/env.py" target="_blank">jumanji/.../bin_pack/env.py</a>
-        </div>
 
-        <h4>EMS selection: “largest spaces first”</h4>
         <p>
-            The full environment can track more than 40 EMS; the observation returns the <code class="inline-code">obs_num_ems</code> largest by volume to keep the observation size fixed. This turns a variable-structure geometric process into a fixed-shape
-            tensor problem (great for JAX/XLA).
-        </p>
-        <pre><code><span class="comment"># From env.py: pick the largest EMS by volume</span>
-ems_volumes = ems.volume() * ems_mask
-sorted_ems_indexes = jnp.argsort(-ems_volumes)   <span class="comment"># decreasing</span>
-obs_ems_indexes = sorted_ems_indexes[: self.obs_num_ems]</code></pre>
-        <div class="source-note">
-            Source: <a href="https://github.com/instadeepai/jumanji/blob/main/jumanji/environments/packing/bin_pack/env.py" target="_blank">jumanji/.../bin_pack/env.py</a>
-        </div>
-
-        <h4>Step semantics: invalid actions terminate the episode</h4>
-        <p>
-            The environment is strict: if you choose an invalid action (item doesn’t fit, or already placed), it terminates. That makes masking a first-class concept — both in PPO and especially in MCTS where we want the search policy to have <em>zero probability mass</em>            on invalid moves.
+            One subtle detail: the full environment can track more than 40 EMS internally, but the observation only returns the <code class="inline-code">obs_num_ems</code> largest by volume. This keeps the observation size fixed, turning a variable-structure
+            geometric process into a fixed-shape tensor problem—exactly what we need for efficient JAX/XLA compilation. The environment is also strict about invalid actions: if you choose an action where the item doesn't fit or has already been placed,
+            the episode terminates immediately. This makes action masking a first-class concern, both in PPO and especially in MCTS where we want zero probability mass on invalid moves.
         </p>
 
-        <pre><code><span class="comment"># From env.py: invalid action terminates</span>
-action_is_valid = state.action_mask[tuple(action)]
-next_state = jax.lax.cond(action_is_valid, pack_item, lambda s: s, state)
-done = ~jnp.any(next_state.action_mask) | ~action_is_valid</code></pre>
-        <div class="source-note">
-            Source: <a href="https://github.com/instadeepai/jumanji/blob/main/jumanji/environments/packing/bin_pack/env.py" target="_blank">jumanji/.../bin_pack/env.py</a>
-        </div>
+        <p>
+            The EMS representation isn't unique to Jumanji—it's a classic way to represent free space as a non-disjoint set of maximal empty cuboids. If you're interested in the "pre-RL" perspective on this representation, Parreño et al.'s <a href="https://www.uv.es/sestio/TechRep/tr03-07.pdf"
+                target="_blank">technical report</a> on GRASP heuristics and Zhao et al.'s <a href="https://eprints.soton.ac.uk/364226/1/A_20Comparative_20Review_20of_203D_20Container_20Loading_20Algorithms.pdf" target="_blank">comparative review</a> of 3D
+            container loading provide excellent background. The key insight is that EMS makes the problem look like "choose a space + choose an item", which is exactly how our policy and value networks will model it.
+        </p>
 
-        <div class="callout">
-            <h4>EMS in the bin packing literature</h4>
-            <p>
-                The EMS / maximal-space representation isn’t unique to Jumanji — it’s a classic way to represent free space as a <em>non-disjoint</em> set of maximal empty cuboids. If you want a “pre-RL” perspective, check out maximal-space / EMS heuristics
-                in container loading:
-            </p>
-            <ul>
-                <li>Parreño et al., “A maximal-space algorithm for the container loading problem” (GRASP) — <a href="https://www.uv.es/sestio/TechRep/tr03-07.pdf" target="_blank">tech report PDF</a></li>
-                <li>Zhao et al., “A Comparative Review of 3D Container Loading Algorithms” — <a href="https://eprints.soton.ac.uk/364226/1/A_20Comparative_20Review_20of_203D_20Container_20Loading_20Algorithms.pdf" target="_blank">review PDF</a></li>
-            </ul>
-            <p class="note" style="margin-bottom:0;">
-                This matters because EMS makes the problem look like “choose a space + choose an item”, which is exactly what our policy/value nets model.
-            </p>
-        </div>
+        <!-- ═══════════════════════════════════════════════════════════════════ -->
+        <!-- SECTION: Expert Iteration -->
+        <!-- ═══════════════════════════════════════════════════════════════════ -->
 
-        <h2 id="exit">Expert Iteration: Not Self-Play</h2>
+        <h2 id="exit">Expert Iteration: Teaching a Network with Search</h2>
 
-        <div class="insight-box">
-            <strong>Key Insight</strong>
-            <p>
-                Unlike board games (Go, Chess), 3D bin packing is a <em>single-agent</em> planning task. There's no opponent, so we don't need self-play. Instead, we use MCTS to generate improved policy targets, then distill that knowledge into a neural
-                network.
-            </p>
-            <p style="margin-top: 12px;">
-                This is <strong>Expert Iteration</strong>—the MCTS acts as an "expert" that teaches the network.
-            </p>
-            <pre>
+        <p>
+            When AlphaZero achieved superhuman performance at Go and Chess, the key innovation wasn't just MCTS or neural networks—it was how the two components reinforced each other. The network provides fast intuition to guide search, and search provides high-quality
+            targets to improve the network. But there's an important detail that's often glossed over: AlphaZero uses <em>self-play</em> because Go and Chess are two-player games. The network plays against itself, generating training data
+            from both sides of the board.
+        </p>
+
+        <p>
+            Bin packing is fundamentally different. There's no opponent—it's a single-agent planning task. So we can't do self-play in the traditional sense. Instead, we use what Anthony et al. called <a href="https://arxiv.org/abs/1705.08439" target="_blank">"Expert Iteration"</a>:
+            we treat MCTS as an expert teacher that generates improved policy targets, then distill that knowledge into a neural network. The network gets better, which makes MCTS stronger (since it uses the network for value estimates and prior probabilities),
+            which produces even better targets, and so on.
+        </p>
+
+        <p>
+            The core loop looks like this:
+        </p>
+
+        <pre>
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │                                                                             │
 │   ┌─────────┐      improved       ┌─────────┐      distill      ┌───────┐   │
@@ -752,202 +708,205 @@ done = ~jnp.any(next_state.action_mask) | ~action_is_valid</code></pre>
 │   The network improves → MCTS becomes stronger → better targets → ...       │
 │                                                                             │
 └─────────────────────────────────────────────────────────────────────────────┘
-</pre>
-            <p style="margin-top: 12px;">
-                <strong>Paper:</strong> Anthony et al.,
-                <a href="https://arxiv.org/abs/1705.08439" target="_blank">"Thinking Fast and Slow with Deep Learning and Tree Search"</a> (2017)
-            </p>
-        </div>
-
-        <h3>Why Expert Iteration Beats PPO</h3>
+        </pre>
 
         <p>
-            PPO learns from <em>sampled actions</em>—single draws from the policy distribution. Expert Iteration learns from <em>full MCTS distributions</em>—a much richer training signal.
+            This is essentially approximate policy iteration with a very strong policy improvement operator. In classical policy iteration, you evaluate your current policy and then greedily improve it. Here, MCTS does both at once—it uses the network's value estimates
+            to evaluate states deep in the search tree, and it uses the network's policy to guide which branches to explore. The resulting action distribution from MCTS is provably better than the raw network output (under certain conditions), so training
+            the network to match it constitutes genuine improvement.
         </p>
 
-        <div class="comparison">
-            <div class="comparison-item">
-                <h4>PPO</h4>
-                <ul>
-                    <li>Samples single action from π(a|s)</li>
-                    <li>Learns from scalar reward signal</li>
-                    <li>Policy gradient has high variance</li>
-                    <li>No lookahead planning</li>
-                </ul>
-            </div>
-            <div class="comparison-item winner">
-                <h4>Expert Iteration ✓</h4>
-                <ul>
-                    <li>Uses full MCTS action distribution</li>
-                    <li>Cross-entropy loss (richer signal)</li>
-                    <li>Search provides implicit variance reduction</li>
-                    <li>Lookahead with exact dynamics</li>
-                </ul>
-            </div>
-        </div>
-
         <p>
-            The key insight is that we have <strong>perfect knowledge of the environment dynamics</strong>. MCTS can simulate exact state transitions—no need to learn a world model. This is a huge advantage for combinatorial problems where the rules are
-            known but the optimal strategy is hard.
+            A subtle but important detail from the Expert Iteration paper: when distilling search into a network, it's better to train on the <em>distribution</em> over actions from search rather than only the argmax. This is sometimes called "Tree-Policy
+            Targets" and it's cost-sensitive—when MCTS is uncertain between two actions, the network isn't punished as harshly for choosing either. The loss function is simply cross-entropy:
         </p>
 
-        <div class="callout">
-            <h4>EXIT target choice: “Tree-policy targets” vs “chosen-action targets”</h4>
-            <p>
-                A subtle but important detail from the Expert Iteration paper: when distilling search into a network, it’s usually better to train on the <em>distribution</em> over actions from search rather than only the argmax. This is called Tree-Policy
-                Targets (TPT) and is cost-sensitive: when MCTS is uncertain between two actions, the network isn’t punished as harshly for choosing either.
-            </p>
-            <div class="math-block">
-                \[ \mathcal{L}_{\text{TPT}}(\theta) \;=\; -\sum_{a} \pi_{\text{search}}(a\mid s)\,\log \pi_\theta(a\mid s) \]
-            </div>
-            <p class="note" style="margin-bottom:0;">
-                This is one reason EXIT-style methods often feel “stable”: the supervision signal is dense over actions, not a single noisy sample.
-            </p>
+        <div class="math-block">
+            \[ \mathcal{L}_{\text{policy}}(\theta) \;=\; -\sum_{a} \pi_{\text{MCTS}}(a\mid s)\,\log \pi_\theta(a\mid s) \]
         </div>
-
-        <h2 id="alg">The Algorithm</h2>
-
-        <div class="algorithm">
-            <div class="algorithm-header">Algorithm 1: Expert Iteration for BinPack</div>
-            <div class="algorithm-body">
-                <div class="line"><span class="line-num">1</span><strong>for</strong> iteration = 1 to N <strong>do</strong></div>
-                <div class="line"><span class="line-num">2</span>&nbsp;&nbsp;<span class="comment">// Collect experience with MCTS</span></div>
-                <div class="line"><span class="line-num">3</span>&nbsp;&nbsp;<strong>for</strong> each episode in batch <strong>do</strong></div>
-                <div class="line"><span class="line-num">4</span>&nbsp;&nbsp;&nbsp;&nbsp;<strong>for</strong> each step <strong>do</strong></div>
-                <div class="line"><span class="line-num">5</span>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Run MCTS from current state</div>
-                <div class="line"><span class="line-num">6</span>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Record (observation, MCTS_policy, reward)</div>
-                <div class="line"><span class="line-num">7</span>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Execute action sampled from MCTS policy</div>
-                <div class="line"><span class="line-num">8</span>&nbsp;&nbsp;<span class="comment">// Compute value targets</span></div>
-                <div class="line"><span class="line-num">9</span>&nbsp;&nbsp;value_targets ← Monte Carlo returns</div>
-                <div class="line"><span class="line-num">10</span>&nbsp;&nbsp;<span class="comment">// Train network</span></div>
-                <div class="line"><span class="line-num">11</span>&nbsp;&nbsp;<strong>for</strong> each minibatch <strong>do</strong></div>
-                <div class="line"><span class="line-num">12</span>&nbsp;&nbsp;&nbsp;&nbsp;L = CrossEntropy(π_θ, MCTS_policy) + MSE(V_θ, value_targets)</div>
-                <div class="line"><span class="line-num">13</span>&nbsp;&nbsp;&nbsp;&nbsp;θ ← θ - α∇L</div>
-            </div>
-        </div>
-
-        <div class="callout">
-            <h4>Online vs batch Expert Iteration (EXIT vs “DAGGER-style”)</h4>
-            <p>
-                Anthony et al. describe both a batch mode (retrain from scratch each iteration) and an online mode (aggregate data across iterations). In practice, most modern systems behave like an online variant: maintain a replay buffer of (s, π_search, z) and continuously
-                update. That tends to reduce compute waste because search data is expensive to generate.
-            </p>
-            <p class="note" style="margin-bottom:0;">
-                This is conceptually close to DAGGER (Ross et al., 2011): collect states from the learner, query an expert label, aggregate, repeat.
-            </p>
-        </div>
-
-        <h3 id="mctx">MCTS with DeepMind's mctx</h3>
 
         <p>
-            We use <a href="https://github.com/google-deepmind/mctx" target="_blank">mctx</a>, DeepMind's JAX-native MCTS library. The key function is <code class="inline-code">gumbel_muzero_policy</code>, which uses Gumbel-Top-k sampling for better exploration
-            during search.
+            This is one reason Expert Iteration often feels more stable than policy gradient methods: the supervision signal is dense over actions, not a single noisy sample. Combined with the fact that we have perfect environment dynamics for search, Expert Iteration
+            becomes remarkably effective for combinatorial optimization problems like bin packing.
+        </p>
+
+        <h3>How Expert Iteration Compares to PPO</h3>
+
+        <p>
+            It's worth understanding exactly why Expert Iteration outperforms PPO on this task. PPO is an on-policy policy gradient method that maximizes a clipped surrogate objective. The canonical form is:
+        </p>
+
+        <div class="math-block">
+            \[ L^{\text{CLIP}}(\theta)=\mathbb{E}_t\left[\min\left(r_t(\theta)\,\hat{A}_t,\; \text{clip}(r_t(\theta),1-\epsilon,1+\epsilon)\,\hat{A}_t\right)\right] \]
+        </div>
+
+        <p>
+            where \(r_t(\theta) = \pi_\theta(a_t|s_t) / \pi_{\theta_{\text{old}}}(a_t|s_t)\) is the probability ratio. PPO works well when you can collect lots of trajectories and the environment is too complex for planning. But PPO's gradient signal is based on
+            <em>sampled actions</em> and <em>sampled returns</em>, so variance control (GAE, baselines, clipping) becomes essential.
+        </p>
+
+        <p>
+            Expert Iteration sidesteps this variance problem entirely. Instead of learning from a single sampled action and its noisy return, we learn from the full MCTS action distribution—a much richer signal. And because we have exact environment dynamics, MCTS
+            can do genuine lookahead planning, discovering good action sequences that pure policy gradients might take much longer to find.
+        </p>
+
+        <p>
+            The practical difference is stark: Expert Iteration achieves 96% volume utilization on BinPack-v2, while PPO plateaus around 90%. That 6 percentage point gap represents a meaningful improvement in packing efficiency.
+        </p>
+
+        <!-- ═══════════════════════════════════════════════════════════════════ -->
+        <!-- SECTION: MCTS with mctx -->
+        <!-- ═══════════════════════════════════════════════════════════════════ -->
+
+        <h2 id="mcts">Monte Carlo Tree Search with mctx</h2>
+
+        <p>
+            We use <a href="https://github.com/google-deepmind/mctx" target="_blank">mctx</a>, DeepMind's JAX-native MCTS library. The library is worth studying because it implements batched MCTS that compiles entirely under XLA—the entire search runs
+            as a single compiled program, not Python loops calling into JAX. This is what makes it fast enough to compete with model-free methods on wall-clock time.
+        </p>
+
+        <p>
+            The mctx library requires you to provide a "recurrent function" that simulates environment transitions. For bin packing, this is trivial because we have the exact environment dynamics—we just call <code class="inline-code">env.step</code>:
         </p>
 
         <pre><code><span class="keyword">import</span> mctx
 
-<span class="comment"># MCTS requires a "recurrent function" that simulates environment transitions</span>
 <span class="keyword">def</span> <span class="function">recurrent_fn</span>(model, rng_key, action, state):
     <span class="string">"""Environment model for MCTS simulation."""</span>
-    <span class="comment"># Step environment (we have perfect dynamics!)</span>
+    model_params, model_state = model
+    
+    <span class="comment"># Step the environment (we have perfect dynamics!)</span>
     action_pair = unflatten_action(action)
     next_state, timestep = jax.vmap(env.step)(state, action_pair)
     
-    <span class="comment"># Get network predictions for next state</span>
-    logits, value = forward.apply(model, timestep.observation)
+    <span class="comment"># Get network predictions for the next state</span>
+    observation = timestep.observation
+    (logits, value), _ = forward.apply(
+        model_params, model_state, observation, is_eval=<span class="keyword">True</span>
+    )
+    
+    <span class="comment"># Mask invalid actions</span>
+    valid_mask = get_valid_action_mask(observation.action_mask)
+    logits = apply_action_mask(logits, valid_mask)
     
     <span class="keyword">return</span> mctx.RecurrentFnOutput(
         reward=timestep.reward,
         discount=timestep.discount,
         prior_logits=logits,
         value=value,
-    ), next_state
+    ), next_state</code></pre>
 
-<span class="comment"># Run MCTS from current state</span>
+        <p>
+            With this function defined, running MCTS is straightforward. We use <code class="inline-code">gumbel_muzero_policy</code>, which provides a more principled approach to exploration than vanilla MCTS (more on this shortly):
+        </p>
+
+        <pre><code><span class="comment"># Run MCTS from the current state</span>
 policy_output = mctx.gumbel_muzero_policy(
     params=model,
     rng_key=key,
     root=mctx.RootFnOutput(
         prior_logits=network_logits,
         value=network_value,
-        embedding=current_state,  <span class="comment"># State IS the embedding</span>
+        embedding=current_state,  <span class="comment"># The state IS the embedding</span>
     ),
     recurrent_fn=recurrent_fn,
-    num_simulations=<span class="number">32</span>,          <span class="comment"># Tree search budget</span>
+    num_simulations=<span class="number">32</span>,          <span class="comment"># Search budget per decision</span>
     invalid_actions=~valid_mask,
 )
 
-<span class="comment"># Extract improved policy (this is our training target!)</span>
+<span class="comment"># Extract the improved policy (this is our training target)</span>
 mcts_policy = policy_output.action_weights  <span class="comment"># Shape: (batch, num_actions)</span></code></pre>
 
-        <p class="note">
-            The <code class="inline-code">action_weights</code> output is a probability distribution over actions, computed from MCTS visit counts (MuZero) or from a policy-improvement transform over completed Q-values (Gumbel MuZero). This is much richer
-            than a single sampled action.
+        <p>
+            The <code class="inline-code">action_weights</code> output is the probability distribution over actions that we use as our training target. This is computed from the search tree—in Gumbel MuZero specifically, it's a softmax over the prior
+            logits plus the completed Q-values, which provides a principled policy improvement guarantee.
         </p>
 
-        <div class="callout">
-            <h4>mctx policy APIs you’ll see in the wild</h4>
-            <ul>
-                <li><code class="inline-code">muzero_policy</code>: PUCT-style selection + optional Dirichlet noise at the root.</li>
-                <li><code class="inline-code">gumbel_muzero_policy</code>: root uses Gumbel-Top-k + Sequential Halving; interior uses deterministic “match visit counts to softmax” rule.</li>
-                <li><code class="inline-code">stochastic_muzero_policy</code>: for environments with chance nodes (afterstates + chance outcomes).</li>
-            </ul>
-            <p class="note" style="margin-bottom:0;">
-                Source files: <a href="https://github.com/google-deepmind/mctx/blob/main/mctx/_src/policies.py" target="_blank">policies.py</a>,
-                <a href="https://github.com/google-deepmind/mctx/blob/main/mctx/_src/search.py" target="_blank">search.py</a>,
-                <a href="https://github.com/google-deepmind/mctx/blob/main/mctx/_src/action_selection.py" target="_blank">action_selection.py</a>.
-            </p>
-        </div>
-
-        <h2 id="gumbel">Gumbel Exploration (and why it’s not “just noise”)</h2>
+        <h3>Under the Hood: How mctx Implements Batched Search</h3>
 
         <p>
-            Gumbel MuZero comes from <em>Policy Improvement by Planning with Gumbel</em> (Danihelka, Guez, Schrittwieser, Silver; ICLR 2022). The key story: when you have many actions and only a small number of simulations, AlphaZero-style root exploration
-            can fail to visit enough actions to guarantee improvement. Gumbel-Top-k sampling fixes this by sampling actions <em>without replacement</em> in a principled way.
+            Understanding how mctx works is instructive if you've ever tried to write MCTS and gotten stuck with Python control flow. The core insight is that the entire search loop is implemented using <code class="inline-code">jax.lax.fori_loop</code>            and <code class="inline-code">jax.lax.while_loop</code>, which compile to XLA control flow rather than Python loops. Here's the main search loop:
         </p>
 
-        <div class="highlight-box">
-            <h4>Gumbel-Max trick: sampling from a softmax</h4>
-            <p>
-                If your policy network outputs logits \( \ell(a) \), you can sample from \( \pi(a) = \text{softmax}(\ell) \) by adding Gumbel noise and taking an argmax:
-            </p>
-            <div class="math-block">
-                \[ g(a) \sim \text{Gumbel}(0,1), \qquad A = \arg\max_a \left[g(a) + \ell(a)\right] \]
-            </div>
-            <p class="note" style="margin-bottom:0;">
-                The paper extends this to the <strong>Gumbel-Top-k</strong> trick (sample k actions without replacement).
-            </p>
-        </div>
+        <pre><code><span class="comment"># From mctx/_src/search.py</span>
+<span class="keyword">def</span> <span class="function">body_fun</span>(sim, loop_state):
+    rng_key, tree = loop_state
+    rng_key, simulate_key, expand_key = jax.random.split(rng_key, <span class="number">3</span>)
 
-        <div class="highlight-box">
-            <h4>Root planning with Gumbel-Top-k + Sequential Halving</h4>
-            <p>
-                At the root node, Gumbel MuZero first picks a subset of candidate actions via Gumbel-Top-k, then allocates the simulation budget across those actions using
-                <strong>Sequential Halving</strong> (Karnin et al., 2013) — a simple-regret-focused bandit algorithm.
-            </p>
-            <p class="note" style="margin-bottom:0;">
-                References:
-                <a href="https://openreview.net/forum?id=bERaNdoegnO" target="_blank">OpenReview</a>,
-                <a href="https://openreview.net/pdf/4f2c0c813d0fbe127329c69b1ba216fbcd95d52c.pdf" target="_blank">PDF</a>,
-                <a href="https://iclr.cc/media/iclr-2022/Slides/6418.pdf" target="_blank">ICLR slides</a>,
-                <a href="https://proceedings.mlr.press/v28/karnin13.pdf" target="_blank">Sequential Halving paper (Karnin et al.)</a>.
-            </p>
+    <span class="comment"># Simulate: walk down the tree selecting actions</span>
+    parent_index, action = simulate(
+        simulate_keys, tree, action_selection_fn, max_depth)
+
+    <span class="comment"># Check if we've reached an unexpanded node</span>
+    next_node_index = tree.children_index[batch_range, parent_index, action]
+    next_node_index = jnp.where(next_node_index == Tree.UNVISITED,
+                                sim + <span class="number">1</span>, next_node_index)
+
+    <span class="comment"># Expand: add new node to the tree</span>
+    tree = expand(params, expand_key, tree, recurrent_fn, 
+                  parent_index, action, next_node_index)
+    
+    <span class="comment"># Backup: propagate values up the tree</span>
+    tree = backward(tree, next_node_index)
+    <span class="keyword">return</span> rng_key, tree</code></pre>
+
+        <p>
+            The simulation phase uses a while loop to walk down the existing tree until it finds an unvisited edge. At expansion, mctx calls your recurrent function to get the value and prior for the new node. The backup phase then propagates the leaf value up to
+            the root using an incremental mean update:
+        </p>
+
+        <div class="math-block">
+            \[ Q_{\text{parent}} \leftarrow \frac{N_{\text{parent}} \cdot Q_{\text{parent}} + G}{N_{\text{parent}} + 1} \quad\text{where}\quad G = r + \gamma \cdot V_{\text{leaf}} \]
         </div>
 
         <p>
-            In mctx, you can literally see the mechanics:
+            Because all of this is expressed as JAX control flow, the entire search compiles to a single XLA program. Combined with <code class="inline-code">vmap</code> over the batch dimension, this makes it feasible to run dozens of simulations per
+            decision at scale.
+        </p>
+
+        <!-- ═══════════════════════════════════════════════════════════════════ -->
+        <!-- SECTION: Gumbel Exploration -->
+        <!-- ═══════════════════════════════════════════════════════════════════ -->
+
+        <h2 id="gumbel">Gumbel Exploration</h2>
+
+        <p>
+            We use Gumbel MuZero rather than vanilla MCTS for a specific reason: when you have many actions and only a small simulation budget, traditional AlphaZero-style exploration can fail to visit enough actions to guarantee improvement. Gumbel MuZero, introduced
+            in <a href="https://openreview.net/forum?id=bERaNdoegnO" target="_blank">"Policy Improvement by Planning with Gumbel"</a> (ICLR 2022), fixes this by sampling actions without replacement in a principled way.
+        </p>
+
+        <p>
+            The foundation is the Gumbel-Max trick for sampling from a categorical distribution. If your policy network outputs logits \(\ell(a)\), you can sample from \(\pi(a) = \text{softmax}(\ell)\) by adding Gumbel noise and taking an argmax:
+        </p>
+
+        <div class="math-block">
+            \[ g(a) \sim \text{Gumbel}(0,1), \qquad A = \arg\max_a \left[g(a) + \ell(a)\right] \]
+        </div>
+
+        <p>
+            The paper extends this to the <strong>Gumbel-Top-k</strong> trick, which samples k actions without replacement. At the root node, Gumbel MuZero uses this to select a subset of candidate actions, then allocates the simulation budget across
+            those actions using <strong>Sequential Halving</strong>—a bandit algorithm optimized for simple regret rather than cumulative regret. This is the right objective when you only care about finding the best action, not about the path you took
+            to find it.
+        </p>
+
+        <p>
+            You can see the mechanics directly in the mctx code:
         </p>
 
         <pre><code><span class="comment"># From mctx/_src/policies.py (gumbel_muzero_policy)</span>
+
 <span class="comment"># 1) Mask invalid actions at the root</span>
-root = root.replace(prior_logits=_mask_invalid_actions(root.prior_logits, invalid_actions))
+root = root.replace(
+    prior_logits=_mask_invalid_actions(root.prior_logits, invalid_actions)
+)
 
 <span class="comment"># 2) Sample Gumbel noise (same shape as logits)</span>
 rng_key, gumbel_rng = jax.random.split(rng_key)
 gumbel = gumbel_scale * jax.random.gumbel(
-    gumbel_rng, shape=root.prior_logits.shape, dtype=root.prior_logits.dtype)
+    gumbel_rng, shape=root.prior_logits.shape, dtype=root.prior_logits.dtype
+)
 
-<span class="comment"># 3) Run the batched tree search using Gumbel-aware action selection</span>
+<span class="comment"># 3) Run batched tree search with Gumbel-aware action selection</span>
 search_tree = search.search(
     params=params,
     rng_key=rng_key,
@@ -968,235 +927,75 @@ search_tree = search.search(
     extra_data=action_selection.GumbelMuZeroExtraData(root_gumbel=gumbel),
 )</code></pre>
 
-        <div class="source-note">
-            Source: <a href="https://github.com/google-deepmind/mctx/blob/main/mctx/_src/policies.py" target="_blank">mctx/_src/policies.py</a>
-        </div>
+        <p>
+            One important detail that might surprise you: in Gumbel MuZero, the returned <code class="inline-code">action_weights</code> are <em>not</em> computed from visit counts like in AlphaZero. Instead, they're <code class="inline-code">softmax(prior_logits + completed_qvalues)</code>—a
+            direct implementation of the policy improvement operator from the paper. This theoretical grounding is part of why Gumbel MuZero works well with small simulation budgets.
+        </p>
 
-        <div class="callout warn">
-            <h4>Cool detail: Gumbel MuZero’s training target is not “visit-count softmax”</h4>
-            <p>
-                In <code class="inline-code">gumbel_muzero_policy</code>, the returned <code class="inline-code">action_weights</code> are computed as:
-                <code class="inline-code">softmax(root.prior_logits + completed_qvalues)</code> (with invalid actions masked). That’s directly aligned with the “completed Q-values” policy-improvement view in the paper and in Grill et al. (2020).
-            </p>
-            <p class="note" style="margin-bottom:0;">
-                If you were expecting <code class="inline-code">visit_counts**(1/temperature)</code> like AlphaZero, this is the “aha”.
-            </p>
-        </div>
+        <!-- ═══════════════════════════════════════════════════════════════════ -->
+        <!-- SECTION: JAX Parallelism -->
+        <!-- ═══════════════════════════════════════════════════════════════════ -->
 
-        <h2 id="underhood">Under the Hood: batched MCTS in mctx (search.py)</h2>
+        <h2 id="jax">JAX Parallelism</h2>
 
         <p>
-            mctx is worth studying because it’s a “clean-room” batched MCTS that compiles under XLA: the whole search is an XLA program built from <code class="inline-code">lax.fori_loop</code>, <code class="inline-code">lax.while_loop</code>, and
-            <code class="inline-code">vmap</code>.
+            The historical challenge with Expert Iteration is computational cost. Running 32 MCTS simulations per action adds significant overhead compared to a single network forward pass. But JAX's parallelization primitives change the calculus dramatically.
         </p>
-
-        <h3>Search loop: simulate → expand → backup (all batched)</h3>
-
-        <pre><code><span class="comment"># From mctx/_src/search.py</span>
-<span class="keyword">def</span> <span class="function">body_fun</span>(sim, loop_state):
-    rng_key, tree = loop_state
-    rng_key, simulate_key, expand_key = jax.random.split(rng_key, <span class="number">3</span>)
-    simulate_keys = jax.random.split(simulate_key, batch_size)
-
-    parent_index, action = simulate(
-        simulate_keys, tree, action_selection_fn, max_depth)
-
-    next_node_index = tree.children_index[batch_range, parent_index, action]
-    next_node_index = jnp.where(next_node_index == Tree.UNVISITED,
-                                sim + <span class="number">1</span>, next_node_index)
-
-    tree = expand(params, expand_key, tree, recurrent_fn, parent_index, action, next_node_index)
-    tree = backward(tree, next_node_index)
-    <span class="keyword">return</span> rng_key, tree</code></pre>
-
-        <div class="source-note">
-            Source: <a href="https://github.com/google-deepmind/mctx/blob/main/mctx/_src/search.py" target="_blank">mctx/_src/search.py</a>
-        </div>
 
         <p>
-            That loop is wrapped in <code class="inline-code">loop_fn</code> (default <code class="inline-code">jax.lax.fori_loop</code>), which is why mctx can run efficiently under <code class="inline-code">jax.jit</code>. If you’ve ever tried to write
-            MCTS and got stuck with Python control flow, this is the pattern.
+            The key primitives are <code class="inline-code">jax.vmap</code> for vectorizing over the batch dimension and <code class="inline-code">jax.pmap</code> for distributing across devices. With <code class="inline-code">vmap</code>, a single line
+            of code turns a function that processes one environment into a function that processes thousands in parallel:
         </p>
 
-        <h3>Simulation traversal uses a JAX while_loop</h3>
-
-        <p>
-            The simulator walks down the existing tree until it finds an unvisited edge (or hits a max depth), selecting actions with the supplied action-selection function:
-        </p>
-
-        <pre><code><span class="comment"># From mctx/_src/search.py (simulate)</span>
-<span class="keyword">def</span> <span class="function">body_fun</span>(state):
-    node_index = state.next_node_index
-    rng_key, sel_key = jax.random.split(state.rng_key)
-    action = action_selection_fn(sel_key, tree, node_index, state.depth)
-    next_node_index = tree.children_index[node_index, action]
-    depth = state.depth + <span class="number">1</span>
-    is_continuing = (next_node_index != Tree.UNVISITED) & (depth &lt; max_depth)
-    <span class="keyword">return</span> state._replace(
-        rng_key=rng_key,
-        node_index=node_index,
-        action=action,
-        next_node_index=next_node_index,
-        depth=depth,
-        is_continuing=is_continuing)
-
-end_state = jax.lax.while_loop(cond_fun, body_fun, initial_state)</code></pre>
-
-        <div class="source-note">
-            Source: <a href="https://github.com/google-deepmind/mctx/blob/main/mctx/_src/search.py" target="_blank">mctx/_src/search.py</a>
-        </div>
-
-        <h3>Expansion calls your recurrent_fn (this is where perfect dynamics plugs in)</h3>
-
-        <p>
-            At expansion, mctx gathers the parent embeddings for the batch, calls your recurrent model once, and writes the new node into the tree buffers. In our BinPack setup, the “embedding” <em>is literally the environment state</em>, and the recurrent
-            fn just calls <code class="inline-code">env.step</code>.
-        </p>
-
-        <h3>Backup updates Q estimates with an incremental mean</h3>
-
-        <p>
-            The backward pass computes the bootstrapped leaf value, then updates parent statistics with an online mean update:
-        </p>
-
-        <div class="math-block">
-            \[ Q_{\text{parent}} \leftarrow \frac{N_{\text{parent}} \cdot Q_{\text{parent}} + G}{N_{\text{parent}} + 1} \quad\text{where}\quad G = r + \gamma \cdot V_{\text{leaf}} \]
-        </div>
-
-        <p class="note">
-            See <code class="inline-code">backward()</code> in <a href="https://github.com/google-deepmind/mctx/blob/main/mctx/_src/search.py" target="_blank">mctx/_src/search.py</a>.
-        </p>
-
-        <h2 id="ppo">Expert Iteration vs Self-Play vs PPO (more detailed)</h2>
-
-        <h3>Self-play: what it is and what it isn’t in single-agent tasks</h3>
-        <p>
-            In two-player zero-sum games, “self-play” means both sides are controlled by the learner; the opponent distribution is endogenous and becomes harder automatically. In single-agent combinatorial optimization, there is no opponent — but you still need a
-            <em>state distribution</em> to train on.
-        </p>
-        <p>
-            Practically, EXIT for single-agent tasks becomes: sample instances, roll out the current policy (optionally with exploration), and query an expert improvement operator (MCTS) at visited states. It’s “self-generated data”, not adversarial self-play.
-        </p>
-
-        <h3>PPO: the optimization objective you’re actually training</h3>
-        <p>
-            PPO is an on-policy policy-gradient method that maximizes a clipped surrogate objective (plus value and entropy terms). The canonical clipped objective is:
-        </p>
-        <div class="math-block">
-            \[ L^{\text{CLIP}}(\theta)=\mathbb{E}_t\left[\min\left(r_t(\theta)\,\hat{A}_t,\; \text{clip}(r_t(\theta),1-\epsilon,1+\epsilon)\,\hat{A}_t\right)\right], \quad r_t(\theta)=\frac{\pi_\theta(a_t\mid s_t)}{\pi_{\theta_{\text{old}}}(a_t\mid s_t)} \]
-        </div>
-        <p>
-            This works great when you can get lots of trajectories and the environment is too complex for planning. But PPO’s gradient signal is still based on <em>sampled actions</em> and <em>sampled returns</em>, so variance control (GAE, baselines,
-            clipping) is a huge part of making it work.
-        </p>
-        <p class="note">
-            Reference: Schulman et al., <a href="https://arxiv.org/abs/1707.06347" target="_blank">“Proximal Policy Optimization Algorithms”</a> (2017).
-        </p>
-
-        <h3>Expert Iteration: approximate policy iteration with a stronger “policy improvement operator”</h3>
-        <p>
-            EXIT-style systems can be read as approximate policy iteration:
-        </p>
-        <ul>
-            <li><strong>Policy evaluation / improvement:</strong> use search to produce an improved policy \(\pi_{\text{search}}(\cdot\mid s)\) (and optionally value targets).</li>
-            <li><strong>Generalization:</strong> train a function approximator \(\pi_\theta\) to imitate \(\pi_{\text{search}}\) over many states.</li>
-        </ul>
-        <p>
-            In perfect-information planning domains (like BinPack), the search operator is unusually strong because it has exact transitions. That’s why EXIT can “jump” to good behavior faster than PPO, which must discover good action sequences through on-policy
-            sampling.
-        </p>
-
-        <div class="callout">
-            <h4>Connecting the dots: “regularized policy optimization” view of MCTS</h4>
-            <p>
-                Two useful papers for mental models:
-            </p>
-            <ul>
-                <li>
-                    Grill et al. (ICML 2020), <a href="https://arxiv.org/abs/2007.12509" target="_blank">“Monte-Carlo Tree Search as Regularized Policy Optimization”</a> — interprets AlphaZero-style search heuristics as approximately solving a regularized
-                    policy optimization problem.
-                </li>
-                <li>
-                    Danihelka et al. (ICLR 2022), <a href="https://openreview.net/forum?id=bERaNdoegnO" target="_blank">“Policy Improvement by Planning with Gumbel”</a> — redesigns action-selection and policy-target construction to more directly guarantee
-                    policy improvement under small simulation budgets.
-                </li>
-            </ul>
-            <p class="note" style="margin-bottom:0;">
-                mctx’s Gumbel MuZero closely follows these “policy improvement” ideas (you can see it in the returned <code class="inline-code">action_weights</code>).
-            </p>
-        </div>
-
-        <h2 id="jax">JAX Parallelism: My favorite!</h2>
-
-        <p>
-            The historical challenge with Expert Iteration is that MCTS is slow. Running 32 simulations per action adds significant overhead. But JAX's parallelization primitives changes a lot (for the better):
-        </p>
-
-        <div class="highlight-box">
-            <h4>jax.vmap: Vectorize Over Batch</h4>
-            <p>
-                Automatically parallelizes operations across the batch dimension. One line of code turns a single-episode function into a batched version:
-            </p>
-            <pre><code><span class="comment"># Instead of looping over episodes...</span>
+        <pre><code><span class="comment"># Without vmap: process episodes one at a time</span>
 <span class="keyword">for</span> i <span class="keyword">in</span> range(batch_size):
-    state, ts = env.step(states[i], actions[i])
+    state, timestep = env.step(states[i], actions[i])
 
-<span class="comment"># ...vectorize with vmap</span>
-state, ts = jax.vmap(env.step)(states, actions)  <span class="comment"># All episodes in parallel!</span></code></pre>
-        </div>
+<span class="comment"># With vmap: all episodes processed in parallel</span>
+state, timestep = jax.vmap(env.step)(states, actions)</code></pre>
 
-        <div class="highlight-box">
-            <h4>jax.pmap: Distribute Across Devices</h4>
-            <p>
-                Replicates computation across all available GPUs/TPUs. Gradients are synchronized automatically with <code class="inline-code">jax.lax.pmean</code>:
-            </p>
-            <pre><code><span class="decorator">@partial</span>(jax.pmap, axis_name=<span class="string">"devices"</span>)
+        <p>
+            The <code class="inline-code">pmap</code> primitive replicates computation across all available GPUs or TPUs. Each device processes a shard of the batch independently, and gradients are synchronized using <code class="inline-code">jax.lax.pmean</code>:
+        </p>
+
+        <pre><code><span class="decorator">@partial</span>(jax.pmap, axis_name=<span class="string">"devices"</span>)
 <span class="keyword">def</span> <span class="function">train_step</span>(model, opt_state, batch):
+    <span class="comment"># Compute gradients on this device's shard</span>
     grads = jax.grad(loss_fn)(model, batch)
     
-    <span class="comment"># Sync gradients across all devices</span>
+    <span class="comment"># Synchronize gradients across all devices</span>
     grads = jax.lax.pmean(grads, axis_name=<span class="string">"devices"</span>)
     
     <span class="comment"># Apply optimizer update</span>
     updates, opt_state = optimizer.update(grads, opt_state)
     model = optax.apply_updates(model, updates)
     <span class="keyword">return</span> model, opt_state</code></pre>
-        </div>
 
         <p>
-            Together, vmap and pmap give us massive throughput. On 4 GPUs with batch size 1024, we process ~20,000 MCTS-guided decisions per second—competitive with PPO's sample efficiency.
+            Together, vmap and pmap give us massive throughput. On 4 GPUs with batch size 1024, we process roughly 20,000 MCTS-guided decisions per second—competitive with PPO's sample efficiency despite running 32 simulations per decision. The JAX documentation
+            on <a href="https://jax.readthedocs.io/en/latest/jax-101/06-parallelism.html" target="_blank">parallelism</a> provides an excellent introduction to these concepts.
         </p>
 
-        <div class="callout">
-            <h4>JAX detail that makes mctx fast: “search is XLA control flow”</h4>
-            <p>
-                mctx’s core loops use <code class="inline-code">jax.lax.fori_loop</code> and <code class="inline-code">jax.lax.while_loop</code>. That means the search runs inside compiled XLA control-flow, not Python, so it’s actually feasible to do
-                dozens of simulations per decision at scale.
-            </p>
-            <p class="note" style="margin-bottom:0;">
-                JAX docs: <a href="https://jax.readthedocs.io/en/latest/jax-101/06-parallelism.html" target="_blank">parallelism</a>,
-                <a href="https://jax.readthedocs.io/en/latest/jax.html#jax.jit" target="_blank">jit</a>,
-                <a href="https://jax.readthedocs.io/en/latest/jax.lax.html" target="_blank">lax</a>.
-            </p>
-        </div>
+        <!-- ═══════════════════════════════════════════════════════════════════ -->
+        <!-- SECTION: Neural Network Architecture -->
+        <!-- ═══════════════════════════════════════════════════════════════════ -->
 
-        <p class="note">
-            <strong>Further reading:</strong>
-            <a href="https://jax.readthedocs.io/en/latest/jax-101/06-parallelism.html" target="_blank">JAX Parallelism Tutorial</a>
-        </p>
-
-        <h2>Neural Network Architecture</h2>
+        <h2 id="architecture">Neural Network Architecture</h2>
 
         <p>
-            We adapt Jumanji's
-            <a href="https://github.com/instadeepai/jumanji/blob/main/jumanji/training/networks/bin_pack/actor_critic.py" target="_blank">A2C architecture</a> for our policy-value network. The key insight is using <strong>cross-attention</strong> between
-            EMS tokens and item tokens.
+            We adapt Jumanji's <a href="https://github.com/instadeepai/jumanji/blob/main/jumanji/training/networks/bin_pack/actor_critic.py" target="_blank">A2C architecture</a> for our policy-value network. The key insight is using <strong>cross-attention</strong>            between EMS tokens and item tokens. This lets the network reason about which items fit in which spaces, with the action mask gating the attention to only consider valid placement combinations.
+        </p>
+
+        <p>
+            The architecture processes EMS and item tokens through alternating layers of self-attention (within each token type) and cross-attention (between types). After encoding, the policy head computes logits via a bilinear form—<code class="inline-code">logits[e,i] = ems_h[e] · items_h[i]</code>—which
+            naturally produces the (E × I) shaped output we need. The value head pools the embeddings and predicts expected utilization in [0, 1].
         </p>
 
         <pre><code><span class="comment"># Architecture overview</span>
 <span class="comment">#</span>
 <span class="comment">#   ┌─────────────┐     ┌─────────────┐</span>
 <span class="comment">#   │  EMS tokens │     │ Item tokens │</span>
+<span class="comment">#   │ (40 × 6D)   │     │ (20 × 3D)   │</span>
 <span class="comment">#   └──────┬──────┘     └──────┬──────┘</span>
 <span class="comment">#          │                   │</span>
 <span class="comment">#          ▼                   ▼</span>
@@ -1208,7 +1007,7 @@ state, ts = jax.vmap(env.step)(states, actions)  <span class="comment"># All epi
 <span class="comment">#                   ▼</span>
 <span class="comment">#          ┌───────────────┐</span>
 <span class="comment">#          │ Cross-Attn    │  ← EMS ↔ Items interaction</span>
-<span class="comment">#          │ (bidirectional)│</span>
+<span class="comment">#          │ (bidirectional)│    (gated by action_mask)</span>
 <span class="comment">#          └───────┬───────┘</span>
 <span class="comment">#                  │</span>
 <span class="comment">#          ┌───────┴───────┐</span>
@@ -1216,71 +1015,41 @@ state, ts = jax.vmap(env.step)(states, actions)  <span class="comment"># All epi
 <span class="comment">#   ┌─────────────┐  ┌─────────────┐</span>
 <span class="comment">#   │ Policy Head │  │ Value Head  │</span>
 <span class="comment">#   │ (E×I logits)│  │ (scalar)    │</span>
-<span class="comment">#   └─────────────┘  └─────────────┘</span>
-
-<span class="keyword">class</span> <span class="function">BinPackEncoder</span>(hk.Module):
-    <span class="keyword">def</span> <span class="function">__call__</span>(self, observation):
-        <span class="comment"># Embed EMS coordinates: (x1,x2,y1,y2,z1,z2) → model_size</span>
-        ems_emb = self._embed_ems(observation.ems)
-        items_emb = self._embed_items(observation.items)
-        
-        <span class="keyword">for</span> layer <span class="keyword">in</span> range(self.num_layers):
-            <span class="comment"># Self-attention within each token type</span>
-            ems_emb = TransformerBlock(...)(ems_emb, ems_emb, ems_emb)
-            items_emb = TransformerBlock(...)(items_emb, items_emb, items_emb)
-            
-            <span class="comment"># Cross-attention: EMS ↔ Items (gated by action_mask)</span>
-            ems_emb = TransformerBlock(...)(ems_emb, items_emb, items_emb)
-            items_emb = TransformerBlock(...)(items_emb, ems_emb, ems_emb)
-        
-        <span class="keyword">return</span> ems_emb, items_emb</code></pre>
+<span class="comment">#   └─────────────┘  └─────────────┘</span></code></pre>
 
         <p>
-            The <strong>policy head</strong> computes logits via a bilinear form:
-            <code class="inline-code">logits[e,i] = ems_h[e] · items_h[i]</code>. This naturally produces the (E × I) shaped output we need.
+            We use <a href="https://dm-haiku.readthedocs.io/" target="_blank">Haiku</a> to build the network. Haiku's <code class="inline-code">hk.transform_with_state</code> pattern cleanly separates the stateful module definition from the pure functional
+            interface that JAX requires:
         </p>
+
+        <pre><code><span class="keyword">import</span> haiku <span class="keyword">as</span> hk
+
+<span class="keyword">def</span> <span class="function">forward_fn</span>(observation, is_eval=<span class="keyword">False</span>):
+    net = BinPackPolicyValueNet(
+        num_transformer_layers=<span class="number">4</span>,
+        transformer_num_heads=<span class="number">4</span>,
+        transformer_key_size=<span class="number">32</span>,
+        transformer_mlp_units=(<span class="number">256</span>, <span class="number">256</span>),
+    )
+    <span class="keyword">return</span> net(observation, is_training=<span class="keyword">not</span> is_eval)
+
+<span class="comment"># Transform to pure functions</span>
+forward = hk.without_apply_rng(hk.transform_with_state(forward_fn))
+
+<span class="comment"># Initialize parameters</span>
+params, state = forward.init(rng_key, dummy_obs)
+
+<span class="comment"># Apply is now a pure function</span>
+(logits, value), new_state = forward.apply(params, state, observation)</code></pre>
+
+        <!-- ═══════════════════════════════════════════════════════════════════ -->
+        <!-- SECTION: Experiments -->
+        <!-- ═══════════════════════════════════════════════════════════════════ -->
+
+        <h2 id="experiments">Experiments</h2>
 
         <p>
-            The <strong>value head</strong> pools embeddings and predicts expected utilization ∈ [0, 1].
-        </p>
-
-        <h2>Training Loop</h2>
-
-        <p>
-            The full training loop follows the standard Expert Iteration pattern: collect → compute targets → train.
-        </p>
-
-        <pre><code><span class="keyword">for</span> iteration <span class="keyword">in</span> range(max_iterations):
-    <span class="comment"># ─────────────────────────────────────────────────────────────</span>
-    <span class="comment"># Step 1: Collect experience with MCTS-guided rollouts</span>
-    <span class="comment"># ─────────────────────────────────────────────────────────────</span>
-    rollout_data = collect_experience(model, rng_key)
-    <span class="comment"># rollout_data contains: (observations, mcts_policies, rewards)</span>
-    
-    <span class="comment"># ─────────────────────────────────────────────────────────────</span>
-    <span class="comment"># Step 2: Compute Monte-Carlo value targets</span>
-    <span class="comment"># ─────────────────────────────────────────────────────────────</span>
-    training_samples = compute_value_targets(rollout_data)
-    <span class="comment"># V(t) = r(t) + γ·r(t+1) + γ²·r(t+2) + ...</span>
-    
-    <span class="comment"># ─────────────────────────────────────────────────────────────</span>
-    <span class="comment"># Step 3: Train network to match MCTS policy and value</span>
-    <span class="comment"># ─────────────────────────────────────────────────────────────</span>
-    <span class="keyword">for</span> minibatch <span class="keyword">in</span> shuffle_and_batch(training_samples):
-        model, opt_state = train_step(model, opt_state, minibatch)
-        
-        <span class="comment"># Loss = CE(π_θ, mcts_policy) + λ·MSE(V_θ, value_target)</span></code></pre>
-
-        <p class="note">
-            Full implementation:
-            <a href="https://github.com/Aneeshers/expert-iteration-rl/blob/main/train_expert_iteration_binpack.py" target="_blank">
-            train_expert_iteration_binpack.py</a>
-        </p>
-
-        <h2>Experiments</h2>
-
-        <p>
-            We trained both Expert Iteration and PPO on BinPack-v2 for 800 iterations with 5 random seeds. Both methods use the same network architecture and batch sizes for fair comparison.
+            We trained both Expert Iteration and PPO on BinPack-v2 for 800 iterations across 5 random seeds. To ensure a fair comparison, both methods use the same network architecture, batch sizes, and evaluation protocol. The key hyperparameters are:
         </p>
 
         <table>
@@ -1305,7 +1074,7 @@ state, ts = jax.vmap(env.step)(states, actions)  <span class="comment"># All epi
                 <td>—</td>
             </tr>
             <tr>
-                <td>PPO epochs</td>
+                <td>PPO epochs per iteration</td>
                 <td>—</td>
                 <td>4</td>
             </tr>
@@ -1324,31 +1093,39 @@ state, ts = jax.vmap(env.step)(states, actions)  <span class="comment"># All epi
         <figure>
             <img src="ppo_vs_alphazero.gif" alt="PPO vs Expert Iteration learning curves">
             <figcaption>
-                <strong>Figure 1.</strong> Learning curves comparing Expert Iteration (light blue) vs PPO (dark blue) on BinPack-v2. Shaded regions show ±1 standard error across 5 seeds. Expert Iteration converges to 96% volume utilization; PPO plateaus
+                <strong>Figure 1.</strong> Learning curves comparing Expert Iteration (light blue) vs PPO (dark blue) on BinPack-v2. Shaded regions show ±1 standard error across 5 seeds. Expert Iteration converges to 96% volume utilization while PPO plateaus
                 around 90%.
             </figcaption>
         </figure>
 
-        <div class="findings">
-            <div class="finding">
-                <div class="finding-num">Result 1</div>
-                <strong>Expert Iteration achieves 96% utilization.</strong> This represents a 6 percentage point improvement over PPO, translating to significantly better packing efficiency.
-            </div>
-            <div class="finding">
-                <div class="finding-num">Result 2</div>
-                <strong>Comparable wall-clock time.</strong> Despite running 32 MCTS simulations per action, JAX parallelism keeps training time competitive with PPO.
-            </div>
-        </div>
-
-        <h2>Key Implementation Details</h2>
-
-        <h3>jax.lax.scan for Efficient Loops</h3>
-
         <p>
-            Python loops inside JIT-compiled functions are unrolled at compile time, causing slow compilation and memory issues. Use <code class="inline-code">jax.lax.scan</code> instead:
+            The results are clear: Expert Iteration achieves 96% volume utilization compared to PPO's 90%, a 6 percentage point improvement that translates to significantly better packing efficiency in practice. Despite running 32 MCTS simulations per action, JAX
+            parallelism keeps training time competitive—both methods reach convergence in roughly the same wall-clock time.
         </p>
 
-        <pre><code><span class="comment"># BAD: Python loop (slow to compile)</span>
+        <p>
+            The learning curves also show that Expert Iteration is more stable. PPO exhibits the characteristic variance of policy gradient methods, with performance fluctuating throughout training. Expert Iteration's learning curve is smoother, reflecting the richer
+            supervision signal from MCTS action distributions.
+        </p>
+
+        <!-- ═══════════════════════════════════════════════════════════════════ -->
+        <!-- SECTION: Implementation Details -->
+        <!-- ═══════════════════════════════════════════════════════════════════ -->
+
+        <h2 id="implementation">Implementation Details</h2>
+
+        <p>
+            A few implementation details are worth highlighting, as they address common pitfalls when working with JAX and MCTS.
+        </p>
+
+        <h3>Using jax.lax.scan for Efficient Loops</h3>
+
+        <p>
+            Python loops inside JIT-compiled functions are unrolled at compile time, causing slow compilation and memory issues for long episodes. The solution is <code class="inline-code">jax.lax.scan</code>, which compiles the loop body once and executes
+            it repeatedly:
+        </p>
+
+        <pre><code><span class="comment"># Inefficient: Python loop gets unrolled</span>
 <span class="keyword">def</span> <span class="function">rollout_bad</span>(state, keys):
     trajectory = []
     <span class="keyword">for</span> key <span class="keyword">in</span> keys:
@@ -1356,7 +1133,7 @@ state, ts = jax.vmap(env.step)(states, actions)  <span class="comment"># All epi
         trajectory.append(data)
     <span class="keyword">return</span> trajectory
 
-<span class="comment"># GOOD: jax.lax.scan (compiles once, runs fast)</span>
+<span class="comment"># Efficient: scan compiles once, runs fast</span>
 <span class="keyword">def</span> <span class="function">rollout_good</span>(state, keys):
     <span class="keyword">def</span> <span class="function">step_fn</span>(carry, key):
         state = carry
@@ -1366,156 +1143,77 @@ state, ts = jax.vmap(env.step)(states, actions)  <span class="comment"># All epi
     final_state, trajectory = jax.lax.scan(step_fn, state, keys)
     <span class="keyword">return</span> trajectory</code></pre>
 
-        <h3>Haiku for Stateful Networks</h3>
+        <h3>Action Masking Without NaNs</h3>
 
         <p>
-            We use <a href="https://dm-haiku.readthedocs.io/" target="_blank">Haiku</a> for neural networks. The <code class="inline-code">hk.transform_with_state</code> pattern separates pure functions from state:
-        </p>
-
-        <pre><code><span class="keyword">import</span> haiku <span class="keyword">as</span> hk
-
-<span class="keyword">def</span> <span class="function">forward_fn</span>(observation, is_eval=<span class="keyword">False</span>):
-    net = BinPackPolicyValueNet(...)
-    <span class="keyword">return</span> net(observation, is_training=<span class="keyword">not</span> is_eval)
-
-<span class="comment"># Transform to pure functions</span>
-forward = hk.without_apply_rng(hk.transform_with_state(forward_fn))
-
-<span class="comment"># Initialize</span>
-params, state = forward.init(rng_key, dummy_obs)
-
-<span class="comment"># Apply (pure function!)</span>
-(logits, value), new_state = forward.apply(params, state, observation)</code></pre>
-
-        <h3>Action Masking</h3>
-
-        <p>
-            Invalid actions (item doesn't fit in EMS, item already placed) must be masked. We use a large negative value instead of -∞ to avoid NaN in softmax:
+            Invalid actions must be masked before computing the softmax for action selection. A common mistake is using <code class="inline-code">-inf</code> for invalid logits, which causes NaN when all actions are invalid (as can happen at episode termination).
+            The solution is to use a large but finite negative value:
         </p>
 
         <pre><code><span class="keyword">def</span> <span class="function">apply_action_mask</span>(logits, valid_mask):
-    <span class="string">"""Set invalid action logits to large negative value."""</span>
+    <span class="string">"""Set invalid action logits to a large negative value."""</span>
     <span class="comment"># Center for numerical stability</span>
     logits = logits - jnp.max(logits, axis=-<span class="number">1</span>, keepdims=<span class="keyword">True</span>)
     <span class="comment"># Use finite minimum (not -inf) to avoid NaN</span>
     <span class="keyword">return</span> jnp.where(valid_mask, logits, jnp.finfo(logits.dtype).min)</code></pre>
 
-        <div class="callout">
-            <h4>mctx does the same thing (and explains why)</h4>
-            <p>
-                mctx’s <code class="inline-code">_mask_invalid_actions</code> subtracts the max logit and uses a finite <code class="inline-code">min_logit</code> instead of <code class="inline-code">-inf</code> because “at the end of an episode, all
-                actions can be invalid” and softmax would produce NaNs.
-            </p>
-            <pre><code><span class="comment"># From mctx/_src/policies.py</span>
-logits = logits - jnp.max(logits, axis=-1, keepdims=True)
-min_logit = jnp.finfo(logits.dtype).min
-return jnp.where(invalid_actions, min_logit, logits)</code></pre>
-            <div class="source-note">
-                Source: <a href="https://github.com/google-deepmind/mctx/blob/main/mctx/_src/policies.py" target="_blank">mctx/_src/policies.py</a>
-            </div>
-        </div>
+        <p>
+            The mctx library uses the same approach for the same reason—at the end of an episode, all actions can become invalid, and the code needs to handle this gracefully.
+        </p>
 
-        <h2>When to Use Expert Iteration</h2>
+        <h3>When to Use Expert Iteration</h3>
 
         <p>
-            Expert Iteration shines when:
+            Expert Iteration is particularly well-suited to problems where you have exact dynamics (so MCTS can simulate accurately), episodes are relatively short (so MCTS overhead doesn't compound excessively), actions have complex dependencies that gradient signals
+            might miss, and you have parallel compute to amortize the cost of search. Bin packing hits all four criteria.
         </p>
-        <ul>
-            <li><strong>You have exact dynamics.</strong> MCTS needs to simulate state transitions accurately.</li>
-            <li><strong>Episodes are short.</strong> MCTS overhead compounds with horizon length.</li>
-            <li><strong>Actions have complex dependencies.</strong> MCTS can explore combinatorial interactions that gradient signals miss.</li>
-            <li><strong>You have parallel compute.</strong> vmap/pmap amortize MCTS cost across batches.</li>
-        </ul>
 
         <p>
-            PPO might be preferred when:
+            PPO remains preferable when dynamics must be learned rather than simulated, horizons are very long (hundreds of steps), action spaces are simple with clear reward gradients, or when you need the simplicity of a model-free approach.
         </p>
-        <ul>
-            <li>Dynamics are learned (model-free setting)</li>
-            <li>Very long horizons (100s of steps)</li>
-            <li>Simple action spaces with clear reward gradients</li>
-        </ul>
 
-        <h2 id="refs">Resources & References</h2>
+        <!-- ═══════════════════════════════════════════════════════════════════ -->
+        <!-- SECTION: References -->
+        <!-- ═══════════════════════════════════════════════════════════════════ -->
+
+        <h2 id="refs">References</h2>
 
         <h3>Code</h3>
-        <ul>
-            <li><a href="https://github.com/Aneeshers/expert-iteration-rl" target="_blank">Our implementation (GitHub)</a></li>
-            <li><a href="https://github.com/google-deepmind/mctx" target="_blank">mctx: JAX MCTS library (DeepMind)</a></li>
-            <li><a href="https://github.com/google-deepmind/mctx/blob/main/mctx/_src/policies.py" target="_blank">mctx/_src/policies.py</a></li>
-            <li><a href="https://github.com/google-deepmind/mctx/blob/main/mctx/_src/search.py" target="_blank">mctx/_src/search.py</a></li>
-            <li><a href="https://github.com/google-deepmind/mctx/blob/main/mctx/_src/action_selection.py" target="_blank">mctx/_src/action_selection.py</a></li>
-            <li><a href="https://github.com/sotetsuk/pgx/tree/main/examples/alphazero" target="_blank">PGX AlphaZero (reference implementation)</a></li>
-            <li><a href="https://github.com/instadeepai/jumanji" target="_blank">Jumanji environments (InstaDeep)</a></li>
-            <li><a href="https://github.com/instadeepai/jumanji/blob/main/jumanji/environments/packing/bin_pack/env.py" target="_blank">Jumanji BinPack env.py</a></li>
-            <li><a href="https://github.com/instadeepai/jumanji/blob/main/jumanji/training/networks/bin_pack/actor_critic.py" target="_blank">Jumanji BinPack actor-critic network</a></li>
-        </ul>
+
+        <p>
+            The complete implementation is available on <a href="https://github.com/Aneeshers/expert-iteration-rl" target="_blank">GitHub</a>. Key dependencies include <a href="https://github.com/google-deepmind/mctx" target="_blank">mctx</a> for MCTS,
+            <a href="https://github.com/instadeepai/jumanji" target="_blank">Jumanji</a> for the BinPack environment, <a href="https://dm-haiku.readthedocs.io/" target="_blank">Haiku</a> for neural networks, and <a href="https://optax.readthedocs.io/"
+                target="_blank">Optax</a> for optimization. The <a href="https://github.com/sotetsuk/pgx/tree/main/examples/alphazero" target="_blank">PGX AlphaZero</a> example was a helpful reference for JAX-native AlphaZero patterns.
+        </p>
 
         <h3>Papers</h3>
+
         <ol class="references">
             <li>
-                Anthony et al.,
-                <a href="https://arxiv.org/abs/1705.08439" target="_blank">"Thinking Fast and Slow with Deep Learning and Tree Search"</a>, NeurIPS 2017. <em>(Expert Iteration / EXIT)</em>
+                Anthony et al., <a href="https://arxiv.org/abs/1705.08439" target="_blank">"Thinking Fast and Slow with Deep Learning and Tree Search"</a>, NeurIPS 2017. The original Expert Iteration paper.
             </li>
             <li>
-                Danihelka et al.,
-                <a href="https://openreview.net/forum?id=bERaNdoegnO" target="_blank">"Policy Improvement by Planning with Gumbel"</a>, ICLR 2022. <em>(Gumbel AlphaZero / Gumbel MuZero)</em> — <a href="https://iclr.cc/media/iclr-2022/Slides/6418.pdf"
-                    target="_blank">slides</a>
+                Danihelka et al., <a href="https://openreview.net/forum?id=bERaNdoegnO" target="_blank">"Policy Improvement by Planning with Gumbel"</a>, ICLR 2022. The theoretical foundation for Gumbel MuZero.
             </li>
             <li>
-                Grill et al.,
-                <a href="https://arxiv.org/abs/2007.12509" target="_blank">"Monte-Carlo Tree Search as Regularized Policy Optimization"</a>, ICML 2020. <em>(Policy-improvement view of MCTS)</em>
+                Grill et al., <a href="https://arxiv.org/abs/2007.12509" target="_blank">"Monte-Carlo Tree Search as Regularized Policy Optimization"</a>, ICML 2020. Interprets MCTS as approximately solving a regularized policy optimization problem.
             </li>
             <li>
-                Silver et al.,
-                <a href="https://www.nature.com/articles/nature24270" target="_blank">"Mastering the game of Go without human knowledge"</a>, Nature 2017. <em>(AlphaZero)</em>
+                Silver et al., <a href="https://www.nature.com/articles/nature24270" target="_blank">"Mastering the game of Go without human knowledge"</a>, Nature 2017. The AlphaZero paper.
             </li>
             <li>
-                Schrittwieser et al.,
-                <a href="https://arxiv.org/abs/1911.08265" target="_blank">"Mastering Atari, Go, Chess and Shogi by Planning with a Learned Model"</a>, Nature 2020. <em>(MuZero)</em>
+                Schrittwieser et al., <a href="https://arxiv.org/abs/1911.08265" target="_blank">"Mastering Atari, Go, Chess and Shogi by Planning with a Learned Model"</a>, Nature 2020. The MuZero paper.
             </li>
             <li>
-                Schulman et al.,
-                <a href="https://arxiv.org/abs/1707.06347" target="_blank">"Proximal Policy Optimization Algorithms"</a>, arXiv 2017. <em>(PPO)</em>
+                Schulman et al., <a href="https://arxiv.org/abs/1707.06347" target="_blank">"Proximal Policy Optimization Algorithms"</a>, arXiv 2017. The PPO paper.
             </li>
             <li>
-                Bonnet et al.,
-                <a href="https://arxiv.org/abs/2306.09884" target="_blank">"Jumanji: a Diverse Suite of Scalable Reinforcement Learning Environments in JAX"</a>, 2023/2024. <em>(BinPack-v2 + other JAX environments)</em>
+                Bonnet et al., <a href="https://arxiv.org/abs/2306.09884" target="_blank">"Jumanji: a Diverse Suite of Scalable Reinforcement Learning Environments in JAX"</a>, 2023. The Jumanji environment suite including BinPack.
             </li>
             <li>
-                Karnin, Koren, Somekh,
-                <a href="https://proceedings.mlr.press/v28/karnin13.pdf" target="_blank">"Almost Optimal Exploration in Multi-Armed Bandits"</a>, ICML 2013. <em>(Sequential Halving)</em>
-            </li>
-            <li>
-                Kocsis & Szepesvári,
-                <a href="https://ggp.stanford.edu/readings/uct.pdf" target="_blank">"Bandit Based Monte-Carlo Planning"</a>, ECML 2006. <em>(UCT)</em>
-            </li>
-            <li>
-                Rosin,
-                <a href="https://link.springer.com/article/10.1007/s10472-011-9258-6" target="_blank">"Multi-armed bandits with episode context"</a>, AMAI 2011. <em>(PUCB / bandit with predictor)</em>
-            </li>
-            <li>
-                Parreño et al.,
-                <a href="https://www.uv.es/sestio/TechRep/tr03-07.pdf" target="_blank">"A maximal-space algorithm for the container loading problem"</a>, tech report. <em>(Maximal-space / EMS heuristics)</em>
-            </li>
-            <li>
-                Zhao et al.,
-                <a href="https://core.ac.uk/download/pdf/29042539.pdf" target="_blank">"A Comparative Review of 3D Container Loading Algorithms"</a>, 2014. <em>(Survey, EMS references)</em>
-            </li>
-            <li>
-                Garey & Johnson,
-                <a href="https://www.amazon.com/Computers-Intractability-NP-Completeness-Mathematical-Sciences/dp/0716710455" target="_blank">"Computers and Intractability: A Guide to NP-Completeness"</a>, 1979. <em>(NP-hardness reference)</em>
+                Karnin, Koren, Somekh, <a href="https://proceedings.mlr.press/v28/karnin13.pdf" target="_blank">"Almost Optimal Exploration in Multi-Armed Bandits"</a>, ICML 2013. The Sequential Halving algorithm used in Gumbel MuZero.
             </li>
         </ol>
-
-        <h3>Documentation</h3>
-        <ul>
-            <li><a href="https://jax.readthedocs.io/en/latest/" target="_blank">JAX Documentation</a></li>
-            <li><a href="https://jax.readthedocs.io/en/latest/jax-101/06-parallelism.html" target="_blank">JAX Parallelism Tutorial</a></li>
-            <li><a href="https://jax.readthedocs.io/en/latest/jax.lax.html" target="_blank">JAX lax control flow</a></li>
-            <li><a href="https://dm-haiku.readthedocs.io/" target="_blank">Haiku Documentation</a></li>
-            <li><a href="https://optax.readthedocs.io/" target="_blank">Optax Documentation</a></li>
-        </ul>
 
         <h2>Citation</h2>
 
