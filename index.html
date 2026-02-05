@@ -4,7 +4,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Expert Iteration for 3D Bin Packing</title>
+    <title>Expert Iteration RL with Gumbel MuZero</title>
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
     <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
     <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js" onload="renderMathInElement(document.body);"></script>
@@ -511,10 +511,10 @@
     <div class="container">
         <header>
             <div class="tag">Reinforcement Learning · JAX · Combinatorial Optimization</div>
-            <h1>Expert Iteration for 3D Bin Packing</h1>
+            <h1>Expert Iteration RL with Gumbel MuZero</h1>
             <p class="subtitle">
-                AlphaZero without self-play! For deterministic single-agent tasks where transitions are known, we can treat MCTS as a teacher that performs lookahead and produces improved policy targets. We run batched MCTS to generate action weights (and values), and
-                distill them into a fast neural policy—using JAX/XLA to make search and training throughput competitive with model-free baselines like PPO.
+                Gumbel MuZero without self-play! For single-agent planning with known dynamics, we use search to compute principled policy improvement targets—not visit counts, but <code class="inline-code">softmax(prior + Q)</code>. We run batched MCTS
+                to generate action weights (and values), and distill them into a fast neural policy—using JAX/XLA to make search and training throughput competitive with model-free baselines like PPO.
             </p>
             <div class="meta">
                 <a href="https://aneeshers.github.io">Aneesh Muppidi</a> · February 2026
@@ -691,7 +691,14 @@ action_mask = jax.vmap(
             we treat MCTS as an expert teacher that generates improved policy targets, then distill that knowledge into a neural network. The network gets better, which makes MCTS stronger (since it uses the network for value estimates and prior probabilities),
             which produces even better targets, and so on.
         </p>
-
+        <div class="callout">
+            <h4>Note: This isn't vanilla Expert Iteration</h4>
+            <p>
+                We use <strong>Gumbel MuZero</strong> as the expert, which provides stronger policy improvement guarantees for large action spaces with limited simulation budgets. The <code class="inline-code">action_weights</code> from mctx aren't visit
+                count proportions (like in the original EXIT paper); they're computed as <code class="inline-code">softmax(prior_logits + completed_Q)</code>, directly implementing the policy improvement operator from <a href="https://openreview.net/forum?id=bERaNdoegnO"
+                    target="_blank">Danihelka et al. (2022)</a>.
+            </p>
+        </div>
         <p>
             The core loop looks like this:
         </p>
@@ -933,7 +940,40 @@ search_tree = search.search(
             One important detail that might surprise you: in Gumbel MuZero, the returned <code class="inline-code">action_weights</code> are <em>not</em> computed from visit counts like in AlphaZero. Instead, they're <code class="inline-code">softmax(prior_logits + completed_qvalues)</code>—a
             direct implementation of the policy improvement operator from the paper. This theoretical grounding is part of why Gumbel MuZero works well with small simulation budgets.
         </p>
+        <h3>Gumbel MuZero vs Traditional EXIT</h3>
 
+        <p>
+            This distinction matters for understanding what we're actually training on:
+        </p>
+
+        <table>
+            <tr>
+                <th>Aspect</th>
+                <th>Traditional EXIT (Anthony et al.)</th>
+                <th>This Implementation</th>
+            </tr>
+            <tr>
+                <td>Policy target</td>
+                <td><code class="inline-code">n(s,a) / n(s)</code> (visit counts)</td>
+                <td><code class="inline-code">softmax(prior + Q)</code> (policy improvement)</td>
+            </tr>
+            <tr>
+                <td>Root exploration</td>
+                <td>UCT + Dirichlet noise</td>
+                <td>Gumbel-Top-k + Sequential Halving</td>
+            </tr>
+            <tr>
+                <td>Theoretical guarantee</td>
+                <td>Asymptotic (infinite simulations)</td>
+                <td>Finite-sample policy improvement</td>
+            </tr>
+        </table>
+
+        <p>
+            The original <a href="https://arxiv.org/abs/1705.08439" target="_blank">Expert Iteration paper</a> uses visit count proportions as targets—the idea being that MCTS visits better actions more often. Gumbel MuZero instead computes targets by
+            <em>directly applying a policy improvement operator</em>: it adds the completed Q-values to the prior logits and takes a softmax. This provides stronger guarantees when simulation budgets are small relative to the action space (like our 800
+            actions with 32 simulations).
+        </p>
         <!-- ═══════════════════════════════════════════════════════════════════ -->
         <!-- SECTION: JAX Parallelism -->
         <!-- ═══════════════════════════════════════════════════════════════════ -->
@@ -1219,8 +1259,8 @@ params, state = forward.init(rng_key, dummy_obs)
 
         <h2>Citation</h2>
 
-        <pre><code>@misc{muppidi2026expertiteration,
-  title={Expert Iteration for 3D Bin Packing},
+        <pre><code>@misc{muppidi2026gumbelexit,
+            title={Expert Iteration with Gumbel MuZero for 3D Bin Packing},
   author={Muppidi, Aneesh},
   year={2026},
   url={https://github.com/Aneeshers/expert-iteration-rl}
