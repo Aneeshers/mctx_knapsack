@@ -513,9 +513,10 @@
             <div class="tag">Reinforcement Learning · JAX · Combinatorial Optimization</div>
             <h1>Expert Iteration RL with Gumbel MuZero</h1>
             <p class="subtitle">
-                Gumbel MuZero without self-play! For single-agent planning with known dynamics, we use search to compute principled policy improvement targets—not visit counts, but <code class="inline-code">softmax(prior + Q)</code>. We run batched MCTS
-                to generate action weights (and values), and distill them into a fast neural policy—using JAX/XLA to make search and training throughput competitive with model-free baselines like PPO.
+                <strong>Gumbel MuZero without self-play.</strong> For single-agent planning with known dynamics, we use search to compute principled policy improvement targets—not visit counts, but <code class="inline-code">softmax(prior + Q)</code>.
+                We run batched MCTS to generate action weights (and values), and distill them into a fast neural policy—using JAX/XLA to make search and training throughput competitive with model-free baselines like PPO.
             </p>
+
             <div class="meta">
                 <a href="https://aneeshers.github.io">Aneesh Muppidi</a> · February 2026
             </div>
